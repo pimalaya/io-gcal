@@ -28,12 +28,15 @@ impl GcalEventDelete {
     /// event id.
     ///
     /// `send_updates` chooses who gets notified of the cancellation by
-    /// email.
+    /// email, and `if_match` gates the deletion on the etag a read
+    /// returned, so an event that changed since comes back as HTTP 412
+    /// rather than vanishing.
     pub fn new(
         auth: &HttpAuthBearer,
         calendar_id: &str,
         event_id: &str,
         send_updates: Option<GcalSendUpdates>,
+        if_match: Option<&str>,
     ) -> Result<Self, GcalSendError> {
         debug!("prepare calendar event deletion");
         trace!("calendar_id: {calendar_id:?}");
@@ -50,7 +53,7 @@ impl GcalEventDelete {
             );
         }
 
-        let send = GcalSend::delete(auth, url);
+        let send = GcalSend::delete_if_match(auth, url, if_match);
 
         Ok(Self { send })
     }

@@ -210,7 +210,7 @@ fn walks_an_event_lifecycle() {
         .event_get("primary", "ev1", None, None)
         .expect("event get");
     client
-        .event_patch("primary", "ev1", &event_body, &Default::default())
+        .event_patch("primary", "ev1", &event_body, &Default::default(), None)
         .expect("event patch");
     client
         .events_list("primary", &Default::default())
@@ -229,7 +229,7 @@ fn walks_an_event_lifecycle() {
         )
         .expect("event quick add");
     client
-        .event_delete("primary", "ev1", None)
+        .event_delete("primary", "ev1", None, None)
         .expect("event delete");
 
     let requests = written(&mut client);
@@ -463,7 +463,7 @@ fn covers_the_remaining_verbs() {
     };
 
     client
-        .event_update("primary", "ev1", &event, &Default::default())
+        .event_update("primary", "ev1", &event, &Default::default(), None)
         .expect("event update");
     client
         .event_import("primary", &event, &Default::default())

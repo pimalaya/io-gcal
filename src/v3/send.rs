@@ -96,6 +96,12 @@ impl GcalSendError {
     pub fn is_sync_token_expired(&self) -> bool {
         matches!(self.status(), Some(410))
     }
+
+    /// Whether the error is a failed entity tag guard (412), meaning
+    /// the resource moved since the etag the write carried was read.
+    pub fn is_precondition_failed(&self) -> bool {
+        matches!(self.status(), Some(412))
+    }
 }
 
 /// Terminal value of a successful Google Calendar exchange.
@@ -123,6 +129,13 @@ impl<T: DeserializeOwned> GcalSend<T> {
     /// Builds a DELETE request against the given URL.
     pub fn delete(auth: &HttpAuthBearer, url: Url) -> Self {
         Self::with_method(auth, "DELETE", url, None, Vec::new())
+    }
+
+    /// Builds a DELETE request guarded by an entity tag.
+    ///
+    /// See [`Self::with_guard`] for what the guard does.
+    pub fn delete_if_match(auth: &HttpAuthBearer, url: Url, if_match: Option<&str>) -> Self {
+        Self::with_guard(auth, "DELETE", url, None, Vec::new(), if_match)
     }
 
     /// Builds a POST request with no body, for the custom verbs that
@@ -163,6 +176,27 @@ impl<T: DeserializeOwned> GcalSend<T> {
         ))
     }
 
+    /// Builds a PUT request with the given value as JSON body, guarded
+    /// by an entity tag.
+    ///
+    /// See [`Self::with_guard`] for what the guard does.
+    pub fn put_json_if_match<B: Serialize>(
+        auth: &HttpAuthBearer,
+        url: Url,
+        body: &B,
+        if_match: Option<&str>,
+    ) -> Result<Self, GcalSendError> {
+        let body = serde_json::to_vec(body).map_err(GcalSendError::SerializeRequest)?;
+        Ok(Self::with_guard(
+            auth,
+            "PUT",
+            url,
+            Some("application/json"),
+            body,
+            if_match,
+        ))
+    }
+
     /// Builds a PATCH request with the given value as JSON body.
     pub fn patch_json<B: Serialize>(
         auth: &HttpAuthBearer,
@@ -179,6 +213,27 @@ impl<T: DeserializeOwned> GcalSend<T> {
         ))
     }
 
+    /// Builds a PATCH request with the given value as JSON body,
+    /// guarded by an entity tag.
+    ///
+    /// See [`Self::with_guard`] for what the guard does.
+    pub fn patch_json_if_match<B: Serialize>(
+        auth: &HttpAuthBearer,
+        url: Url,
+        body: &B,
+        if_match: Option<&str>,
+    ) -> Result<Self, GcalSendError> {
+        let body = serde_json::to_vec(body).map_err(GcalSendError::SerializeRequest)?;
+        Ok(Self::with_guard(
+            auth,
+            "PATCH",
+            url,
+            Some("application/json"),
+            body,
+            if_match,
+        ))
+    }
+
     /// Builds a request with an arbitrary method, content type and body.
     pub fn with_method(
         auth: &HttpAuthBearer,
@@ -186,6 +241,24 @@ impl<T: DeserializeOwned> GcalSend<T> {
         url: Url,
         content_type: Option<&str>,
         body: Vec<u8>,
+    ) -> Self {
+        Self::with_guard(auth, method, url, content_type, body, None)
+    }
+
+    /// Builds a request with an arbitrary method, content type, body
+    /// and optional entity tag guard.
+    ///
+    /// The guard rides as an `If-Match` header carrying the etag a read
+    /// returned, so the write only lands while the resource has not
+    /// moved underneath it; a stale tag comes back as HTTP 412. An
+    /// absent guard overwrites unconditionally.
+    pub fn with_guard(
+        auth: &HttpAuthBearer,
+        method: &str,
+        url: Url,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+        if_match: Option<&str>,
     ) -> Self {
         let host = url.host_str().unwrap_or("localhost");
 
@@ -199,11 +272,16 @@ impl<T: DeserializeOwned> GcalSend<T> {
             request = request.header("Content-Type", content_type);
         }
 
+        if let Some(if_match) = if_match {
+            request = request.header("If-Match", if_match);
+        }
+
         request.method = method.into();
 
         debug!("prepare request to send");
         trace!("method: {method}");
         trace!("url: {url}");
+        trace!("if_match: {if_match:?}");
 
         Self {
             state: State::Send(Http11Send::new(request)),

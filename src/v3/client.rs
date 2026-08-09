@@ -406,38 +406,47 @@ impl GcalClientStd {
         self.run(coroutine)
     }
 
-    /// Replaces an event (`events.update`).
+    /// Replaces an event (`events.update`), optionally guarded by the
+    /// etag a read returned.
     pub fn event_update(
         &mut self,
         calendar_id: &str,
         event_id: &str,
         event: &GcalEvent,
         params: &GcalEventUpdateParams,
+        if_match: Option<&str>,
     ) -> Result<GcalSendOutput<GcalEvent>, GcalClientStdError> {
-        let coroutine = GcalEventUpdate::new(&self.auth, calendar_id, event_id, event, params)?;
+        let coroutine =
+            GcalEventUpdate::new(&self.auth, calendar_id, event_id, event, params, if_match)?;
         self.run(coroutine)
     }
 
-    /// Patches an event (`events.patch`).
+    /// Patches an event (`events.patch`), optionally guarded by the
+    /// etag a read returned.
     pub fn event_patch(
         &mut self,
         calendar_id: &str,
         event_id: &str,
         event: &GcalEvent,
         params: &GcalEventPatchParams,
+        if_match: Option<&str>,
     ) -> Result<GcalSendOutput<GcalEvent>, GcalClientStdError> {
-        let coroutine = GcalEventPatch::new(&self.auth, calendar_id, event_id, event, params)?;
+        let coroutine =
+            GcalEventPatch::new(&self.auth, calendar_id, event_id, event, params, if_match)?;
         self.run(coroutine)
     }
 
-    /// Deletes an event by id (`events.delete`).
+    /// Deletes an event by id (`events.delete`), optionally guarded by
+    /// the etag a read returned.
     pub fn event_delete(
         &mut self,
         calendar_id: &str,
         event_id: &str,
         send_updates: Option<GcalSendUpdates>,
+        if_match: Option<&str>,
     ) -> Result<GcalSendOutput<GcalNoResponse>, GcalClientStdError> {
-        let coroutine = GcalEventDelete::new(&self.auth, calendar_id, event_id, send_updates)?;
+        let coroutine =
+            GcalEventDelete::new(&self.auth, calendar_id, event_id, send_updates, if_match)?;
         self.run(coroutine)
     }
 

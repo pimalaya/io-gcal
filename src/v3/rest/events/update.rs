@@ -49,12 +49,17 @@ impl GcalEventUpdate {
     /// Builds the `events.update` request, replacing the event of the
     /// given id as a whole: every field the event leaves unset is
     /// cleared.
+    ///
+    /// `if_match` gates the write on the etag a read returned, so a
+    /// concurrent change comes back as HTTP 412 rather than being
+    /// overwritten; `None` overwrites unconditionally.
     pub fn new(
         auth: &HttpAuthBearer,
         calendar_id: &str,
         event_id: &str,
         event: &GcalEvent,
         params: &GcalEventUpdateParams,
+        if_match: Option<&str>,
     ) -> Result<Self, GcalSendError> {
         debug!("prepare calendar event for update");
         trace!("calendar_id: {calendar_id:?}");
@@ -66,7 +71,7 @@ impl GcalEventUpdate {
             .join(&format!("calendars/{calendar_id}/events/{event_id}"))?;
         append_query_pairs(&mut url, params);
 
-        let send = GcalSend::put_json(auth, url, event)?;
+        let send = GcalSend::put_json_if_match(auth, url, event, if_match)?;
 
         Ok(Self { send })
     }

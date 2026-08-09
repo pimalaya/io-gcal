@@ -419,7 +419,8 @@ fn updates_an_event() {
         send_updates: Some(GcalSendUpdates::ExternalOnly),
         ..Default::default()
     };
-    let mut coroutine = GcalEventUpdate::new(&auth(), "primary", "ev1", &event(), &params).unwrap();
+    let mut coroutine =
+        GcalEventUpdate::new(&auth(), "primary", "ev1", &event(), &params, None).unwrap();
     let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
 
     ret.unwrap();
@@ -438,7 +439,7 @@ fn patches_an_event() {
         ..Default::default()
     };
     let mut coroutine =
-        GcalEventPatch::new(&auth(), "primary", "ev1", &patch, &Default::default()).unwrap();
+        GcalEventPatch::new(&auth(), "primary", "ev1", &patch, &Default::default(), None).unwrap();
     let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
 
     ret.unwrap();
@@ -456,7 +457,7 @@ fn patches_an_event() {
 
 #[test]
 fn deletes_an_event() {
-    let mut coroutine = GcalEventDelete::new(&auth(), "primary", "ev1", None).unwrap();
+    let mut coroutine = GcalEventDelete::new(&auth(), "primary", "ev1", None, None).unwrap();
     let (request, ret) = expect_exchange(&mut coroutine, &empty_response("204 No Content"));
 
     ret.unwrap();
@@ -468,9 +469,99 @@ fn deletes_an_event() {
 }
 
 #[test]
+fn guards_a_write_on_an_entity_tag() {
+    for (method, request) in [
+        ("PUT", {
+            let mut coroutine = GcalEventUpdate::new(
+                &auth(),
+                "primary",
+                "ev1",
+                &event(),
+                &Default::default(),
+                Some("\"tag-1\""),
+            )
+            .unwrap();
+            let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
+            ret.unwrap();
+            request
+        }),
+        ("PATCH", {
+            let mut coroutine = GcalEventPatch::new(
+                &auth(),
+                "primary",
+                "ev1",
+                &event(),
+                &Default::default(),
+                Some("\"tag-1\""),
+            )
+            .unwrap();
+            let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
+            ret.unwrap();
+            request
+        }),
+        ("DELETE", {
+            let mut coroutine =
+                GcalEventDelete::new(&auth(), "primary", "ev1", None, Some("\"tag-1\"")).unwrap();
+            let (request, ret) = expect_exchange(&mut coroutine, &empty_response("204 No Content"));
+            ret.unwrap();
+            request
+        }),
+    ] {
+        assert!(request.starts_with(method), "got: {request}");
+        assert!(
+            request.contains("If-Match: \"tag-1\""),
+            "{method} got: {request}"
+        );
+    }
+}
+
+#[test]
+fn leaves_an_unguarded_write_unconditional() {
+    let mut coroutine = GcalEventUpdate::new(
+        &auth(),
+        "primary",
+        "ev1",
+        &event(),
+        &Default::default(),
+        None,
+    )
+    .unwrap();
+    let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
+
+    ret.unwrap();
+
+    assert!(!request.contains("If-Match"), "got: {request}");
+}
+
+#[test]
+fn reports_a_stale_entity_tag() {
+    let body = r#"{"error":{"code":412,"message":"Precondition Failed"}}"#;
+    let mut coroutine = GcalEventUpdate::new(
+        &auth(),
+        "primary",
+        "ev1",
+        &event(),
+        &Default::default(),
+        Some("\"stale\""),
+    )
+    .unwrap();
+    let (_, ret) = expect_exchange(
+        &mut coroutine,
+        &json_response("412 Precondition Failed", body),
+    );
+    let Err(err) = ret else {
+        panic!("expected an API error");
+    };
+
+    assert!(err.is_precondition_failed());
+    assert!(!err.is_retryable());
+    assert!(!err.is_sync_token_expired());
+}
+
+#[test]
 fn deletes_an_event_notifying_nobody() {
     let mut coroutine =
-        GcalEventDelete::new(&auth(), "primary", "ev1", Some(GcalSendUpdates::None)).unwrap();
+        GcalEventDelete::new(&auth(), "primary", "ev1", Some(GcalSendUpdates::None), None).unwrap();
     let (request, ret) = expect_exchange(&mut coroutine, &empty_response("204 No Content"));
 
     ret.unwrap();
@@ -848,7 +939,8 @@ fn spells_out_the_send_updates_values() {
         ("externalOnly", GcalSendUpdates::ExternalOnly),
         ("none", GcalSendUpdates::None),
     ] {
-        let mut coroutine = GcalEventDelete::new(&auth(), "primary", "ev1", Some(value)).unwrap();
+        let mut coroutine =
+            GcalEventDelete::new(&auth(), "primary", "ev1", Some(value), None).unwrap();
         let (request, ret) = expect_exchange(&mut coroutine, &empty_response("204 No Content"));
 
         ret.unwrap();

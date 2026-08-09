@@ -48,12 +48,17 @@ pub struct GcalEventPatch {
 impl GcalEventPatch {
     /// Builds the `events.patch` request, merging only the fields the
     /// given event sets into the event of the given id.
+    ///
+    /// `if_match` gates the write on the etag a read returned, so a
+    /// concurrent change comes back as HTTP 412 rather than being
+    /// merged into; `None` patches unconditionally.
     pub fn new(
         auth: &HttpAuthBearer,
         calendar_id: &str,
         event_id: &str,
         event: &GcalEvent,
         params: &GcalEventPatchParams,
+        if_match: Option<&str>,
     ) -> Result<Self, GcalSendError> {
         debug!("prepare calendar event for patch");
         trace!("calendar_id: {calendar_id:?}");
@@ -65,7 +70,7 @@ impl GcalEventPatch {
             .join(&format!("calendars/{calendar_id}/events/{event_id}"))?;
         append_query_pairs(&mut url, params);
 
-        let send = GcalSend::patch_json(auth, url, event)?;
+        let send = GcalSend::patch_json_if_match(auth, url, event, if_match)?;
 
         Ok(Self { send })
     }

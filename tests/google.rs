@@ -246,6 +246,9 @@ fn events(client: &mut GcalClientStd, calendar_id: &str) {
                 ..Default::default()
             },
             &Default::default(),
+            // NOTE: guarded on the etag the read just returned, which
+            // exercises the If-Match path against the live API.
+            fetched.etag.as_deref(),
         )
         .expect("event patch")
         .response;
@@ -259,7 +262,13 @@ fn events(client: &mut GcalClientStd, calendar_id: &str) {
     let mut replacement = patched.clone();
     replacement.summary = Some(String::from("io-gcal test event renamed"));
     let updated = client
-        .event_update(calendar_id, &event_id, &replacement, &Default::default())
+        .event_update(
+            calendar_id,
+            &event_id,
+            &replacement,
+            &Default::default(),
+            None,
+        )
         .expect("event update")
         .response;
     assert_eq!(
@@ -325,7 +334,7 @@ fn events(client: &mut GcalClientStd, calendar_id: &str) {
         .expect("the last page carries a sync token");
 
     client
-        .event_delete(calendar_id, &event_id, None)
+        .event_delete(calendar_id, &event_id, None, None)
         .expect("event delete");
 
     let changed = client
