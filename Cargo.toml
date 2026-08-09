@@ -1,0 +1,46 @@
+[package]
+name = "io-gcal"
+description = "Google Calendar REST API client library for Rust"
+version = "0.1.0"
+authors = ["Clément DOUIN (soywod) <pimalaya.org@posteo.net>"]
+rust-version = "1.87"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+categories = ["api-bindings", "date-and-time", "no-std"]
+keywords = ["io-free", "no-std", "coroutine", "google", "calendar"]
+homepage = "https://pimalaya.org"
+documentation = "https://docs.rs/io-gcal/latest/io_gcal"
+repository = "https://github.com/pimalaya/io-gcal"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["rustls-ring"]
+client = []
+rustls-ring = ["client", "pimalaya-stream/rustls-ring", "dep:anyhow", "dep:pimalaya-stream"]
+rustls-aws = ["client", "pimalaya-stream/rustls-aws", "dep:anyhow", "dep:pimalaya-stream"]
+native-tls = ["client", "pimalaya-stream/native-tls", "dep:anyhow", "dep:pimalaya-stream"]
+vendored = ["pimalaya-stream?/vendored"]
+
+[[example]]
+name = "std_gcal"
+path = "examples/std_gcal.rs"
+required-features = ["rustls-ring"]
+
+[dev-dependencies]
+env_logger = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+
+[dependencies]
+anyhow = { version = "1", optional = true }
+io-http = { version = "0.3", default-features = false }
+log = { version = "0.4", default-features = false }
+pimalaya-stream = { version = "0.1", default-features = false, optional = true }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+serde_variant = { version = "0.1", default-features = false }
+thiserror = { version = "2", default-features = false }
+url = { version = "2.5", default-features = false, features = ["serde"] }
