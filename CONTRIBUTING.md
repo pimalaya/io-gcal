@@ -57,17 +57,19 @@ The push channels are left out of the live tests: a watch needs a publicly reach
 
 ## Minting a token without a human
 
-A token from the authorization-code flow acts as you and expires within the hour, which rules out an unattended run. A service account instead signs its own assertion and trades it for a token whenever it needs one, the JWT-bearer grant, and tests/google.sh does that trade:
+A token from the authorization-code flow acts as you and expires within the hour, which rules out an unattended run. A service account instead signs its own assertion and trades it for a token whenever one is needed, the JWT-bearer grant of RFC 7523 section 2.1, and the tests do that themselves through io-oauth when handed a key rather than a token:
 
 ```sh
-GCAL_ACCESS_TOKEN=$(./tests/google.sh key.json) cargo test --test google -- --ignored
+GCAL_SERVICE_ACCOUNT_KEY_FILE=key.json cargo test --test google -- --ignored
 ```
+
+`GCAL_SERVICE_ACCOUNT_KEY` takes the key inline instead of by path, which is what CI passes straight out of its secret. `GCAL_ACCESS_TOKEN` still short-circuits both when you already hold a token.
 
 The key file is the JSON one the Google Cloud console hands out under IAM -> Service Accounts -> Keys -> Add key. Nothing else is needed: no role, no domain-wide delegation, no Workspace domain. A service account is a Calendar principal in its own right and owns the calendars it creates, which is all the live tests touch, so no personal calendar is read or written.
 
 That is also why the assertions in `account` check the shape of what comes back rather than its presence: a human account always has settings and a primary calendar, a fresh service account has neither.
 
-To move the CI job off `workflow_dispatch` onto every push, store the key JSON as a secret and mint the token in the job with the same script. The variant worth preferring stores nothing at all: `google-github-actions/auth@v2` with Workload Identity Federation exchanges the GitHub OIDC token for a scoped access token, so no key ever leaves Google.
+Minting in process rather than in a shell is deliberate. The token is derived from the secret, so GitHub cannot know to redact it; keeping it inside the test process means it is never written to a file, never passed between steps, and never lands anywhere a log could pick it up. io-http redacts `authorization` in its `Debug` implementation, so it stays out of the trace log too.
 
 ## Coverage
 
@@ -83,13 +85,13 @@ The offline suites cover 97% of the lines. What is left out is `GcalClientStd::c
 
 Three jobs run out of .github/workflows/tests.yml. The shared Pimalaya `tests` job builds and runs the offline suites on every push, and a `coverage` job reports tarpaulin's line coverage to Codecov.
 
-The `google-tests` job runs the live tests on every push. It stores no access token, since one would expire within the hour: it stores the JSON key of a service account as the `GCAL_SERVICE_ACCOUNT_KEY` repository secret, and tests/google.sh trades that key for a fresh token at the start of each run. Setting it up once:
+The `google-tests` job runs the live tests on every push. It stores no access token, since one would expire within the hour: it stores the JSON key of a service account as the `GCAL_SERVICE_ACCOUNT_KEY` repository secret, and the tests trade that key for a fresh token themselves. Setting it up once:
 
 1. In the Google Cloud console, create a service account under IAM -> Service Accounts, with no role, then Keys -> Add key -> Create new key -> JSON.
 2. Enable the Calendar API for the project, https://console.cloud.google.com/apis/library/calendar-json.googleapis.com, or every call answers 403 `accessNotConfigured`.
 3. Paste the whole file, newlines included, into Settings -> Secrets and variables -> Actions -> New repository secret, named `GCAL_SERVICE_ACCOUNT_KEY`.
 
-The job derives the token from the secret rather than reading it directly, so GitHub does not know to redact it; the run registers it with `::add-mask::` before anything can log it, which matters because the job runs at `RUST_LOG=trace`. The job is also guarded on the repository name, since a fork holds no secret and would fail on every contributor's push.
+The secret reaches the test process as an environment variable and nothing else: no key file on the runner, no token passed between steps, nothing to mask. The job is guarded on the repository name, since a fork holds no secret and would fail on every contributor's push.
 
 A JSON key is a long-lived credential sitting in two places, GitHub and whatever machine downloaded it. Deleting the local copy once the secret is set, and disabling the key in the console if it ever leaks, is the whole of the hygiene. The way to avoid the credential entirely is Workload Identity Federation: `google-github-actions/auth@v2` exchanges the GitHub OIDC token for a scoped access token, so nothing is stored on either side. That swap is a drop-in replacement for the minting step, and worth making once this is green.
 

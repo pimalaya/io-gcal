@@ -1,11 +1,10 @@
 //! Live tests against the Google Calendar API.
 //!
 //! Google only accepts an OAuth2 Bearer token (no app passwords), and
-//! these tests do no OAuth of their own: they read one out of
-//! `GCAL_ACCESS_TOKEN` and do not care which grant minted it.
+//! there are two ways to hand one to these tests.
 //!
-//! Two grants make sense here. A token from the authorization-code
-//! flow, minted by hand, acts as you and dies within the hour:
+//! A token from the authorization-code flow, minted by hand, acts as
+//! you and dies within the hour:
 //!
 //! ```sh
 //! GCAL_ACCESS_TOKEN="ya29...." \
@@ -13,13 +12,18 @@
 //! ```
 //!
 //! A service account instead signs its own assertion and trades it for
-//! a token whenever it needs one, which is what makes an unattended run
-//! possible. tests/google.sh does that trade out of a key file:
+//! a token whenever one is needed, which is what makes an unattended
+//! run possible. Point the tests at its JSON key and they mint the
+//! token themselves through io-oauth, so no token is ever handled by a
+//! shell, written to a file or passed between CI steps:
 //!
 //! ```sh
-//! GCAL_ACCESS_TOKEN=$(./tests/google.sh key.json) \
+//! GCAL_SERVICE_ACCOUNT_KEY_FILE=key.json \
 //! cargo test --test google -- --ignored
 //! ```
+//!
+//! CI passes the key itself rather than a path, as
+//! `GCAL_SERVICE_ACCOUNT_KEY`, since it comes straight out of a secret.
 //!
 //! Both principals are covered on purpose, so the assertions below only
 //! state what holds for either. A service account owns its own
@@ -46,9 +50,10 @@
 use core::fmt::Debug;
 
 use std::{
-    env,
+    borrow::Cow,
+    env, fs,
     panic::{self, AssertUnwindSafe},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use io_gcal::v3::{
@@ -64,6 +69,21 @@ use io_gcal::v3::{
         freebusy::{GcalFreeBusyRequest, GcalFreeBusyRequestItem},
     },
 };
+use io_oauth::{
+    client::Oauth20ClientStd,
+    rfc7523::{
+        assertion::{Oauth20JwtBearerClaims, Oauth20JwtBearerKey},
+        auth_grant::Oauth20JwtBearerGrantRequestParams,
+    },
+};
+use pimalaya_stream::tls::Tls;
+use secrecy::ExposeSecret;
+use serde::Deserialize;
+use url::Url;
+
+/// The scope the live tests need: read and write on the calendars the
+/// principal owns.
+const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar";
 
 /// Read-only pass over the account-wide resources: the colour
 /// palettes, the user settings and the calendar list.
@@ -397,9 +417,97 @@ fn free_busy(client: &mut GcalClientStd, calendar_id: &str) {
 fn connect() -> GcalClientStd {
     env_logger::try_init().ok();
 
-    let token = env::var("GCAL_ACCESS_TOKEN").expect("GCAL_ACCESS_TOKEN not set");
+    GcalClientStd::connect(token(), GcalClientStdConnectOptions::default()).expect("connect")
+}
 
-    GcalClientStd::connect(token, GcalClientStdConnectOptions::default()).expect("connect")
+/// The bearer token the run authenticates with.
+///
+/// `GCAL_ACCESS_TOKEN` short-circuits everything when it is set, for
+/// the token you minted by hand. Otherwise a service account key, held
+/// inline in `GCAL_SERVICE_ACCOUNT_KEY` or at the path
+/// `GCAL_SERVICE_ACCOUNT_KEY_FILE`, is traded for a fresh token.
+fn token() -> String {
+    if let Ok(token) = env::var("GCAL_ACCESS_TOKEN") {
+        return token;
+    }
+
+    if let Ok(key) = env::var("GCAL_SERVICE_ACCOUNT_KEY") {
+        return mint_token(&key);
+    }
+
+    if let Ok(path) = env::var("GCAL_SERVICE_ACCOUNT_KEY_FILE") {
+        let key = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("cannot read the service account key at {path}: {err}"));
+
+        return mint_token(&key);
+    }
+
+    panic!(
+        "set GCAL_ACCESS_TOKEN, or GCAL_SERVICE_ACCOUNT_KEY / \
+         GCAL_SERVICE_ACCOUNT_KEY_FILE to mint one"
+    );
+}
+
+/// The subset of a service account key file the JWT bearer grant needs.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ServiceAccountKey {
+    client_email: String,
+    private_key: String,
+    #[serde(default = "default_token_uri")]
+    token_uri: String,
+}
+
+fn default_token_uri() -> String {
+    String::from("https://oauth2.googleapis.com/token")
+}
+
+/// Signs a JWT bearer assertion with the service account key and trades
+/// it for an access token (RFC 7523 section 2.1).
+///
+/// This is the grant that needs no human: the assertion *is* the
+/// authorization, so there is no consent screen and no refresh token to
+/// keep alive. The scopes ride in the claims, which is Google's
+/// deviation from the RFC, and io-oauth models it: the token endpoint
+/// reads them from there rather than from the request body.
+fn mint_token(key: &str) -> String {
+    let key: ServiceAccountKey =
+        serde_json::from_str(key).expect("the service account key is valid JSON");
+
+    let signer = Oauth20JwtBearerKey::from_pkcs8_pem(&key.private_key)
+        .expect("the service account key holds a PKCS#8 private key");
+
+    let token_uri: Url = key.token_uri.parse().expect("the token URI is a valid URL");
+
+    let mut client =
+        Oauth20ClientStd::connect(token_uri, &Tls::default(), key.client_email.as_str())
+            .expect("connect to the token endpoint");
+
+    let claims = Oauth20JwtBearerClaims {
+        iss: key.client_email.as_str().into(),
+        scope: [Cow::from(CALENDAR_SCOPE)].into_iter().collect(),
+        ..Default::default()
+    };
+
+    // NOTE: iat and exp come from the clock here, in the std client;
+    // the coroutine layer underneath stays clock-free.
+    let assertion = client
+        .sign_jwt_bearer_assertion(&signer, claims, None, Duration::from_secs(600))
+        .expect("sign the assertion");
+
+    let params = Oauth20JwtBearerGrantRequestParams {
+        assertion,
+        scope: Default::default(),
+    };
+
+    let response = client
+        .request_jwt_bearer_grant(params)
+        .expect("trade the assertion for an access token");
+
+    match response {
+        Ok(granted) => granted.access_token.expose_secret().to_owned(),
+        Err(err) => panic!("the token endpoint refused the assertion: {err:?}"),
+    }
 }
 
 /// A timed event boundary at the given RFC 3339 timestamp.
