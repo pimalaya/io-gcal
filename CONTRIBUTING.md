@@ -51,7 +51,23 @@ tests/google.rs holds two ignored end-to-end tests against the live Calendar API
 GCAL_ACCESS_TOKEN=<token> cargo test --test google -- --ignored
 ```
 
+The tests do no OAuth of their own, so any grant that yields a bearer token works.
+
 The push channels are left out of the live tests: a watch needs a publicly reachable HTTPS webhook for Google to POST to, which a test process cannot provide.
+
+## Minting a token without a human
+
+A token from the authorization-code flow acts as you and expires within the hour, which rules out an unattended run. A service account instead signs its own assertion and trades it for a token whenever it needs one, the JWT-bearer grant, and tests/google.sh does that trade:
+
+```sh
+GCAL_ACCESS_TOKEN=$(./tests/google.sh key.json) cargo test --test google -- --ignored
+```
+
+The key file is the JSON one the Google Cloud console hands out under IAM -> Service Accounts -> Keys -> Add key. Nothing else is needed: no role, no domain-wide delegation, no Workspace domain. A service account is a Calendar principal in its own right and owns the calendars it creates, which is all the live tests touch, so no personal calendar is read or written.
+
+That is also why the assertions in `account` check the shape of what comes back rather than its presence: a human account always has settings and a primary calendar, a fresh service account has neither.
+
+To move the CI job off `workflow_dispatch` onto every push, store the key JSON as a secret and mint the token in the job with the same script. The variant worth preferring stores nothing at all: `google-github-actions/auth@v2` with Workload Identity Federation exchanges the GitHub OIDC token for a scoped access token, so no key ever leaves Google.
 
 ## Coverage
 
@@ -67,7 +83,15 @@ The offline suites cover 97% of the lines. What is left out is `GcalClientStd::c
 
 Three jobs run out of .github/workflows/tests.yml. The shared Pimalaya `tests` job builds and runs the offline suites on every push, and a `coverage` job reports tarpaulin's line coverage to Codecov.
 
-The `google-tests` job is manual: it only runs on a `workflow_dispatch`, because a Google access token expires after about an hour and a stored secret would be stale by the time an unattended run reached it. Refresh the `GCAL_ACCESS_TOKEN` repository secret, then trigger the workflow by hand.
+The `google-tests` job runs the live tests on every push. It stores no access token, since one would expire within the hour: it stores the JSON key of a service account as the `GCAL_SERVICE_ACCOUNT_KEY` repository secret, and tests/google.sh trades that key for a fresh token at the start of each run. Setting it up once:
+
+1. In the Google Cloud console, create a service account under IAM -> Service Accounts, with no role, then Keys -> Add key -> Create new key -> JSON.
+2. Enable the Calendar API for the project, https://console.cloud.google.com/apis/library/calendar-json.googleapis.com, or every call answers 403 `accessNotConfigured`.
+3. Paste the whole file, newlines included, into Settings -> Secrets and variables -> Actions -> New repository secret, named `GCAL_SERVICE_ACCOUNT_KEY`.
+
+The job derives the token from the secret rather than reading it directly, so GitHub does not know to redact it; the run registers it with `::add-mask::` before anything can log it, which matters because the job runs at `RUST_LOG=trace`. The job is also guarded on the repository name, since a fork holds no secret and would fail on every contributor's push.
+
+A JSON key is a long-lived credential sitting in two places, GitHub and whatever machine downloaded it. Deleting the local copy once the secret is set, and disabling the key in the console if it ever leaks, is the whole of the hygiene. The way to avoid the credential entirely is Workload Identity Federation: `google-github-actions/auth@v2` exchanges the GitHub OIDC token for a scoped access token, so nothing is stored on either side. That swap is a drop-in replacement for the minting step, and worth making once this is green.
 
 ## Checking the API surface against the reference
 

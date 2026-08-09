@@ -1,13 +1,30 @@
 //! Live tests against the Google Calendar API.
 //!
-//! Google only accepts an OAuth2 Bearer token (no app passwords), so
-//! mint an access token out of band, the OAuth2 dance being the
-//! caller's job, then run with:
+//! Google only accepts an OAuth2 Bearer token (no app passwords), and
+//! these tests do no OAuth of their own: they read one out of
+//! `GCAL_ACCESS_TOKEN` and do not care which grant minted it.
+//!
+//! Two grants make sense here. A token from the authorization-code
+//! flow, minted by hand, acts as you and dies within the hour:
 //!
 //! ```sh
 //! GCAL_ACCESS_TOKEN="ya29...." \
 //! cargo test --test google -- --ignored
 //! ```
+//!
+//! A service account instead signs its own assertion and trades it for
+//! a token whenever it needs one, which is what makes an unattended run
+//! possible. tests/google.sh does that trade out of a key file:
+//!
+//! ```sh
+//! GCAL_ACCESS_TOKEN=$(./tests/google.sh key.json) \
+//! cargo test --test google -- --ignored
+//! ```
+//!
+//! Both principals are covered on purpose, so the assertions below only
+//! state what holds for either. A service account owns its own
+//! calendars, which is all these tests touch: no personal calendar is
+//! read or written, whichever token is used.
 //!
 //! [`account`] only reads, and is satisfied by the
 //! `calendar.readonly` scope. [`calendar`] walks the whole CRUD
@@ -19,11 +36,6 @@
 //! The push channels are deliberately left out: a `watch` needs a
 //! publicly reachable HTTPS webhook Google can POST to, which a test
 //! process cannot provide.
-//!
-//! These tests are wired into CI as a manually triggered job rather
-//! than on every push: a Google access token expires after about an
-//! hour, so a stored secret is stale by the time an unattended run
-//! reaches it.
 
 #![cfg(any(
     feature = "rustls-ring",
@@ -67,32 +79,34 @@ fn account() {
         "the calendar palette is never empty"
     );
 
+    // NOTE: a human account always has settings and a primary
+    // calendar; a service account starts with neither, so what is
+    // asserted here is the shape of whatever comes back rather than its
+    // presence. That a listing can be walked and an entry fetched by id
+    // is covered against a calendar the run owns, in [`calendar`].
     let settings = client
         .settings_list(&Default::default())
         .expect("settings list")
         .response;
     assert!(
-        settings.items.iter().any(|setting| setting.id.is_some()),
-        "the settings listing is never empty"
+        settings
+            .items
+            .iter()
+            .all(|setting| setting.id.is_some() && setting.value.is_some()),
+        "every setting carries an id and a value"
     );
 
     let calendars = client
         .calendar_list_list(&Default::default())
         .expect("calendar list list")
         .response;
-    let primary = calendars
-        .items
-        .iter()
-        .find(|entry| entry.primary == Some(true))
-        .expect("the account always has a primary calendar");
-    assert!(primary.access_role.is_some());
-
-    let id = primary.id.clone().expect("the primary entry carries an id");
-    let entry = client
-        .calendar_list_entry_get(&id)
-        .expect("calendar list entry get")
-        .response;
-    assert_eq!(entry.id.as_deref(), Some(id.as_str()));
+    assert!(
+        calendars
+            .items
+            .iter()
+            .all(|entry| entry.id.is_some() && entry.access_role.is_some()),
+        "every calendar list entry carries an id and an access role"
+    );
 }
 
 /// Full CRUD pass on a throwaway secondary calendar.

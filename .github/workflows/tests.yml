@@ -28,12 +28,14 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-  # Manual only: a Google access token expires after about an hour, so
-  # a stored secret is stale by the time an unattended run reaches it.
-  # Refresh the GCAL_ACCESS_TOKEN secret, then trigger this workflow by
-  # hand.
+  # The live tests mint their own access token, so they need no stored
+  # token: GCAL_SERVICE_ACCOUNT_KEY holds the JSON key of a service
+  # account, and tests/google.sh trades it for a fresh token per run.
+  #
+  # Only in this repository: a fork holds no secret, and the job would
+  # fail on every contributor's push for want of one.
   google-tests:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.repository == 'pimalaya/io-gcal'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +47,18 @@ jobs:
           name: soywod
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-      - run: nix develop -c cargo test --features rustls-ring --test google -- --ignored
+      - name: Mint an access token and run the live tests
         env:
           RUST_LOG: trace
-          GCAL_ACCESS_TOKEN: ${{ secrets.GCAL_ACCESS_TOKEN }}
+          GCAL_SERVICE_ACCOUNT_KEY: ${{ secrets.GCAL_SERVICE_ACCOUNT_KEY }}
+        run: |
+          printf '%s' "$GCAL_SERVICE_ACCOUNT_KEY" > "$RUNNER_TEMP/gcal-key.json"
+          token=$(nix develop -c ./tests/google.sh "$RUNNER_TEMP/gcal-key.json")
+          # The token is derived from the secret, so GitHub does not
+          # know to mask it; register it before anything can log it.
+          echo "::add-mask::$token"
+          GCAL_ACCESS_TOKEN="$token" \
+            nix develop -c cargo test --features rustls-ring --test google -- --ignored
+      - name: Shred the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gcal-key.json"
