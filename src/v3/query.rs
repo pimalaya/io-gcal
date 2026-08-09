@@ -18,6 +18,23 @@ use serde::{
     Serialize, Serializer,
     ser::{Error as SerError, Impossible, SerializeSeq, SerializeStruct},
 };
+use url::Url;
+
+/// Appends the query pairs of `params` to `url`.
+///
+/// A params struct that serializes to nothing leaves the URL
+/// untouched: going through `query_pairs_mut` unconditionally would
+/// append a bare `?` to every parameterless request.
+pub fn append_query_pairs<T>(url: &mut Url, params: &T)
+where
+    T: Serialize + ?Sized,
+{
+    let pairs = to_query_pairs(params);
+
+    if !pairs.is_empty() {
+        url.query_pairs_mut().extend_pairs(pairs);
+    }
+}
 
 /// Serialize `value` into a list of URL query `(key, value)` pairs.
 pub fn to_query_pairs<T>(value: &T) -> Vec<(String, String)>

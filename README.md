@@ -1,4 +1,4 @@
-# I/O Google Calendar [![Documentation](https://img.shields.io/docsrs/io-gcal?style=flat&logo=docs.rs&logoColor=white)](https://docs.rs/io-gcal/latest/io_gcal) [![Matrix](https://img.shields.io/badge/chat-%23pimalaya-blue?style=flat&logo=matrix&logoColor=white)](https://matrix.to/#/#pimalaya:matrix.org) [![Mastodon](https://img.shields.io/badge/news-%40pimalaya-blue?style=flat&logo=mastodon&logoColor=white)](https://fosstodon.org/@pimalaya)
+# I/O Google Calendar [![Documentation](https://img.shields.io/docsrs/io-gcal?style=flat&logo=docs.rs&logoColor=white)](https://docs.rs/io-gcal/latest/io_gcal) [![Coverage](https://img.shields.io/codecov/c/github/pimalaya/io-gcal/master?style=flat&logo=codecov&logoColor=white)](https://codecov.io/gh/pimalaya/io-gcal) [![Matrix](https://img.shields.io/badge/chat-%23pimalaya-blue?style=flat&logo=matrix&logoColor=white)](https://matrix.to/#/#pimalaya:matrix.org) [![Mastodon](https://img.shields.io/badge/news-%40pimalaya-blue?style=flat&logo=mastodon&logoColor=white)](https://fosstodon.org/@pimalaya)
 
 Google Calendar API client library for Rust
 

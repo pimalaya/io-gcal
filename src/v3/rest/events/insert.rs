@@ -13,8 +13,8 @@ use crate::{
     coroutine::*,
     gcal_try,
     v3::{
-        query::{is_false, to_query_pairs},
-        rest::events::{GcalEvent, GcalSendUpdates},
+        query::{append_query_pairs, is_false},
+        rest::events::{GcalEvent, GcalEventDateTime, GcalSendUpdates},
         send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
     },
 };
@@ -48,6 +48,9 @@ pub struct GcalEventInsert {
 impl GcalEventInsert {
     /// Builds the `events.insert` request from the given event, whose
     /// start and end are the only required fields.
+    ///
+    /// A timed recurring event additionally needs a time zone on both
+    /// of them, since that is what its recurrence is expanded in.
     pub fn new(
         auth: &HttpAuthBearer,
         calendar_id: &str,
@@ -64,9 +67,25 @@ impl GcalEventInsert {
             return Err(err);
         }
 
+        let start_unanchored = event
+            .start
+            .as_ref()
+            .is_some_and(GcalEventDateTime::is_timed_without_time_zone);
+        let end_unanchored = event
+            .end
+            .as_ref()
+            .is_some_and(GcalEventDateTime::is_timed_without_time_zone);
+
+        if !event.recurrence.is_empty() && (start_unanchored || end_unanchored) {
+            let err = GcalSendError::InvalidRequest(
+                "Recurring event start and end need a time zone".into(),
+            );
+            return Err(err);
+        }
+
         let mut url =
             Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/events"))?;
-        url.query_pairs_mut().extend_pairs(to_query_pairs(params));
+        append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, event)?;
 

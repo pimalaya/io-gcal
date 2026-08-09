@@ -256,6 +256,18 @@ pub struct GcalEventDateTime {
     pub time_zone: Option<String>,
 }
 
+impl GcalEventDateTime {
+    /// Whether the boundary is a timed one carrying no time zone.
+    ///
+    /// A recurring event cannot have such a boundary: its recurrence is
+    /// expanded in the time zone of its start, and the UTC offset a
+    /// timestamp carries does not name one. An all-day boundary, dated
+    /// rather than timed, needs no time zone.
+    pub fn is_timed_without_time_zone(&self) -> bool {
+        self.date_time.is_some() && self.time_zone.is_none()
+    }
+}
+
 /// The creator or the organizer of an event.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]

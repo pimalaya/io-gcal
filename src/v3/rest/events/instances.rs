@@ -13,7 +13,7 @@ use crate::{
     coroutine::*,
     gcal_try,
     v3::{
-        query::{is_false, to_query_pairs},
+        query::{append_query_pairs, is_false},
         rest::events::GcalEvents,
         send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
     },
@@ -71,7 +71,7 @@ impl GcalEventInstances {
         let mut url = Url::parse(GCAL_API_BASE)?.join(&format!(
             "calendars/{calendar_id}/events/{event_id}/instances"
         ))?;
-        url.query_pairs_mut().extend_pairs(to_query_pairs(params));
+        append_query_pairs(&mut url, params);
 
         let send = GcalSend::get(auth, url);
 

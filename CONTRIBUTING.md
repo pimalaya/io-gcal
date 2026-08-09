@@ -32,11 +32,42 @@ The default suite is fully offline: every coroutine is driven against an in-memo
 cargo test
 ```
 
-tests/gcal.rs is an ignored end-to-end test walking the whole CRUD surface against the live Calendar API. It needs a TLS feature and a `GCAL_ACCESS_TOKEN` environment variable with the https://www.googleapis.com/auth/calendar scope. It works on a throwaway secondary calendar and deletes it at the end:
+The suites under tests/ mirror the source tree, one file per resource plus the cross-cutting ones:
+
+| Suite               | What it covers                                                                                     |
+|---------------------|-----------------------------------------------------------------------------------------------------|
+| tests/common/mod.rs | The scripted-coroutine harness: canned responses in, request bytes and terminal value out            |
+| tests/send.rs       | The transport: the authorized request, the error envelope, the redirect refusal, the keep-alive flag  |
+| tests/query.rs      | The query serializer: what reaches the URL and what deliberately does not                            |
+| tests/acl.rs, calendar_list.rs, calendars.rs, channels.rs, colors.rs, events.rs, freebusy.rs, settings.rs | One file per resource: every method's request line, query parameters, body and parsed response, plus the validation each constructor applies and the wire spelling of every enum |
+| tests/client.rs     | The std client over a scripted stream, including its error paths                                     |
+| tests/google.rs     | The live tests, ignored by default                                                                   |
+
+A test asserts on the request as written on the wire, since the query keys are camelCase and a silent rename is exactly the kind of regression the offline suite exists to catch.
+
+tests/google.rs holds two ignored end-to-end tests against the live Calendar API, both needing a TLS feature and a `GCAL_ACCESS_TOKEN` environment variable. `account` only reads and is satisfied by the https://www.googleapis.com/auth/calendar.readonly scope; `calendar` walks the whole CRUD surface on a throwaway secondary calendar, needs the https://www.googleapis.com/auth/calendar scope, and deletes that calendar however the run ends:
 
 ```sh
-GCAL_ACCESS_TOKEN=<token> cargo test --test gcal -- --include-ignored
+GCAL_ACCESS_TOKEN=<token> cargo test --test google -- --ignored
 ```
+
+The push channels are left out of the live tests: a watch needs a publicly reachable HTTPS webhook for Google to POST to, which a test process cannot provide.
+
+## Coverage
+
+cargo-tarpaulin ships in the devshell, so the number CI reports can be reproduced locally:
+
+```sh
+cargo tarpaulin --engine llvm --out Stdout
+```
+
+The offline suites cover 97% of the lines. What is left out is `GcalClientStd::connect`, which opens a real TCP and TLS connection to www.googleapis.com and therefore cannot run offline, plus a handful of lines inside generic functions that the llvm instrumentation attributes to no test even though the suites demonstrably execute them. Do not reshape the code to chase those.
+
+## CI
+
+Three jobs run out of .github/workflows/tests.yml. The shared Pimalaya `tests` job builds and runs the offline suites on every push, and a `coverage` job reports tarpaulin's line coverage to Codecov.
+
+The `google-tests` job is manual: it only runs on a `workflow_dispatch`, because a Google access token expires after about an hour and a stored secret would be stale by the time an unattended run reached it. Refresh the `GCAL_ACCESS_TOKEN` repository secret, then trigger the workflow by hand.
 
 ## Checking the API surface against the reference
 

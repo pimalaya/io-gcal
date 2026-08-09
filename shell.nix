@@ -9,6 +9,7 @@
 let
   inherit (pkgs)
     cargo-deny
+    cargo-tarpaulin
     openssl
     pkg-config
     ;
@@ -34,6 +35,7 @@ shell.overrideAttrs (prev: {
 
   buildInputs = (prev.buildInputs or [ ]) ++ [
     cargo-deny
+    cargo-tarpaulin
     openssl
   ];
 })

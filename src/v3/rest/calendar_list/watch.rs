@@ -10,7 +10,7 @@ use crate::{
     coroutine::*,
     gcal_try,
     v3::{
-        query::to_query_pairs,
+        query::append_query_pairs,
         rest::{calendar_list::list::GcalCalendarListListParams, channels::GcalChannel},
         send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
     },
@@ -38,7 +38,7 @@ impl GcalCalendarListWatch {
         trace!("params: {params:?}");
 
         let mut url = Url::parse(GCAL_API_BASE)?.join("users/me/calendarList/watch")?;
-        url.query_pairs_mut().extend_pairs(to_query_pairs(params));
+        append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, channel)?;
 

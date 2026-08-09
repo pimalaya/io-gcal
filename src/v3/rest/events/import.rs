@@ -13,8 +13,8 @@ use crate::{
     coroutine::*,
     gcal_try,
     v3::{
-        query::{is_false, to_query_pairs},
-        rest::events::GcalEvent,
+        query::{append_query_pairs, is_false},
+        rest::events::{GcalEvent, GcalEventDateTime},
         send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
     },
 };
@@ -47,7 +47,8 @@ impl GcalEventImport {
     ///
     /// Importing adds a private copy of an event that already exists
     /// elsewhere, so the event must carry its RFC 5545 unique
-    /// identifier along with its start and end. Only an event whose
+    /// identifier along with its start and end, and a time zone on both
+    /// of them when it is a timed recurring event. Only an event whose
     /// type is [`crate::v3::rest::events::GcalEventType::Default`] can
     /// be imported.
     pub fn new(
@@ -76,9 +77,25 @@ impl GcalEventImport {
             return Err(err);
         }
 
+        let start_unanchored = event
+            .start
+            .as_ref()
+            .is_some_and(GcalEventDateTime::is_timed_without_time_zone);
+        let end_unanchored = event
+            .end
+            .as_ref()
+            .is_some_and(GcalEventDateTime::is_timed_without_time_zone);
+
+        if !event.recurrence.is_empty() && (start_unanchored || end_unanchored) {
+            let err = GcalSendError::InvalidRequest(
+                "Recurring event start and end need a time zone".into(),
+            );
+            return Err(err);
+        }
+
         let mut url =
             Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/events/import"))?;
-        url.query_pairs_mut().extend_pairs(to_query_pairs(params));
+        append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, event)?;
 
