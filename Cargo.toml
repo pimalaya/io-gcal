@@ -3,7 +3,7 @@ name = "io-gcal"
 description = "Google Calendar REST API client library for Rust"
 version = "0.1.0"
 authors = ["Clément DOUIN (soywod) <pimalaya.org@posteo.net>"]
-rust-version = "1.87"
+rust-version = "1.88"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 categories = ["api-bindings", "date-and-time", "no-std"]
@@ -31,16 +31,16 @@ required-features = ["rustls-ring"]
 
 [dev-dependencies]
 env_logger = "0.11"
-io-oauth = { version = "0.2", default-features = false, features = ["jwt-bearer", "rustls-ring"] }
+io-oauth = { version = "0.3", default-features = false, features = ["jwt-bearer", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
 secrecy = { version = "0.10", default-features = false }
 
 [dependencies]
 anyhow = { version = "1", optional = true }
-io-http = { version = "0.3", default-features = false }
+io-http = { version = "0.5", default-features = false }
 log = { version = "0.4", default-features = false }
-pimalaya-stream = { version = "0.1", default-features = false, optional = true }
+pimalaya-stream = { version = "0.3", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 serde_variant = { version = "0.1", default-features = false }

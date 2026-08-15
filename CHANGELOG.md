@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-15
+
 ### Added
 
 - Added the I/O-free coroutines covering the whole version 3 of the Google Calendar API: `acl` (list, get, insert, update, patch, delete, watch), `calendarList` (list, get, insert, update, patch, delete, watch), `calendars` (get, insert, update, patch, delete, clear, transferOwnership), `channels` (stop), `colors` (get), `events` (list, get, insert, update, patch, delete, import, instances, move, quickAdd, watch), `freebusy` (query) and `settings` (list, get, watch).
 - Added the shared `GcalSend` request primitive over io-http, the `GcalCoroutine` contract and the `GcalClientStd` blocking client (`client` feature), with `connect` opening the TCP and TLS connection behind a TLS feature (`rustls-ring` default, `rustls-aws`, `native-tls`).
 - Added an optional `If-Match` guard to the event writes (`events.update`, `events.patch`, `events.delete`), so a write can be gated on the entity tag a read returned; `GcalSendError::is_precondition_failed` recognises the 412 a stale tag comes back as.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/root..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..HEAD
+[0.1.0]: https://github.com/pimalaya/io-gcal/compare/root..v0.1.0

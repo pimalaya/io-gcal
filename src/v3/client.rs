@@ -27,7 +27,10 @@ use io_http::rfc6750::bearer::HttpAuthBearer;
     feature = "rustls-ring",
     feature = "native-tls"
 ))]
-use pimalaya_stream::{std::stream::StreamStd, tls::Tls};
+use pimalaya_stream::{
+    stream::{Stream, TcpConnectOptions, TlsConnectOptions},
+    tls::Tls,
+};
 use thiserror::Error;
 #[cfg(any(
     feature = "rustls-aws",
@@ -178,8 +181,19 @@ impl GcalClientStd {
             .ok_or_else(|| GcalClientStdError::UrlMissingHost(url.to_string()))?;
 
         let stream = match url.scheme() {
-            "http" => StreamStd::connect_tcp(host, url.port().unwrap_or(80))?,
-            "https" => StreamStd::connect_tls(host, url.port().unwrap_or(443), &tls)?,
+            "http" => {
+                let port = url.port().unwrap_or(80);
+                Stream::connect_tcp(host, port, TcpConnectOptions::default())?
+            }
+            "https" => {
+                let port = url.port().unwrap_or(443);
+                let opts = TlsConnectOptions {
+                    tls: tls.clone(),
+                    ..Default::default()
+                };
+
+                Stream::connect_tls(host, port, opts)?
+            }
             scheme => {
                 return Err(GcalClientStdError::UrlUnsupportedScheme {
                     url: url.to_string(),
