@@ -44,6 +44,26 @@ where
     value.serialize(QuerySerializer).unwrap_or_default()
 }
 
+/// Serialize a single field `value` into URL query pairs under `key`.
+///
+/// Same rules as a struct field of [`to_query_pairs`]: `None` produces
+/// nothing and a unit enum variant produces its serde-renamed name.
+pub fn to_field_pairs<T>(key: &'static str, value: &T) -> Vec<(String, String)>
+where
+    T: Serialize + ?Sized,
+{
+    let mut pairs = Vec::new();
+    let field = FieldQuery {
+        key,
+        pairs: &mut pairs,
+    };
+
+    match value.serialize(field) {
+        Ok(()) => pairs,
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Predicate for `#[serde(skip_serializing_if = ...)]` on bool flags that
 /// should only appear in the query when set.
 pub fn is_false(value: &bool) -> bool {

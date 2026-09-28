@@ -6,13 +6,13 @@ use alloc::format;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use serde_variant::to_variant_name;
 use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
+        query::to_field_pairs,
         rest::events::{GcalEvent, GcalSendUpdates},
         send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
     },
@@ -49,12 +49,8 @@ impl GcalEventQuickAdd {
 
         url.query_pairs_mut().append_pair("text", text);
 
-        if let Some(send_updates) = send_updates {
-            url.query_pairs_mut().append_pair(
-                "sendUpdates",
-                to_variant_name(&send_updates).unwrap_or_default(),
-            );
-        }
+        url.query_pairs_mut()
+            .extend_pairs(to_field_pairs("sendUpdates", &send_updates));
 
         let send = GcalSend::post_empty(auth, url);
 

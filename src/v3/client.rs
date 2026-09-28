@@ -47,42 +47,59 @@ use url::Url;
 use crate::v3::send::GCAL_API_BASE;
 use crate::{
     coroutine::*,
-    v3::rest::{
-        acl::{
-            GcalAcl, GcalAclRule, delete::GcalAclRuleDelete, get::GcalAclRuleGet,
-            insert::GcalAclRuleInsert, list::GcalAclList, list::GcalAclListParams,
-            patch::GcalAclRulePatch, update::GcalAclRuleUpdate, watch::GcalAclWatch,
+    v3::{
+        rest::{
+            acl::{
+                GcalAcl, GcalAclRule,
+                delete::GcalAclRuleDelete,
+                get::GcalAclRuleGet,
+                insert::GcalAclRuleInsert,
+                list::{GcalAclList, GcalAclListParams},
+                patch::GcalAclRulePatch,
+                update::GcalAclRuleUpdate,
+                watch::GcalAclWatch,
+            },
+            calendar_list::{
+                GcalCalendarList, GcalCalendarListEntry,
+                delete::GcalCalendarListEntryDelete,
+                get::GcalCalendarListEntryGet,
+                insert::GcalCalendarListEntryInsert,
+                list::{GcalCalendarListList, GcalCalendarListListParams},
+                patch::GcalCalendarListEntryPatch,
+                update::GcalCalendarListEntryUpdate,
+                watch::GcalCalendarListWatch,
+            },
+            calendars::{
+                GcalCalendar, clear::GcalCalendarClear, delete::GcalCalendarDelete,
+                get::GcalCalendarGet, insert::GcalCalendarInsert, patch::GcalCalendarPatch,
+                transfer_ownership::GcalCalendarTransferOwnership, update::GcalCalendarUpdate,
+            },
+            channels::{GcalChannel, stop::GcalChannelStop},
+            colors::{GcalColors, get::GcalColorsGet},
+            events::{
+                GcalEvent, GcalEvents, GcalSendUpdates,
+                delete::GcalEventDelete,
+                get::GcalEventGet,
+                import::{GcalEventImport, GcalEventImportParams},
+                insert::{GcalEventInsert, GcalEventInsertParams},
+                instances::{GcalEventInstances, GcalEventInstancesParams},
+                list::{GcalEventsList, GcalEventsListParams},
+                r#move::GcalEventMove,
+                patch::{GcalEventPatch, GcalEventPatchParams},
+                quick_add::GcalEventQuickAdd,
+                update::{GcalEventUpdate, GcalEventUpdateParams},
+                watch::GcalEventsWatch,
+            },
+            freebusy::{GcalFreeBusyRequest, GcalFreeBusyResponse, query::GcalFreeBusyQuery},
+            settings::{
+                GcalSetting, GcalSettings,
+                get::GcalSettingGet,
+                list::{GcalSettingsList, GcalSettingsListParams},
+                watch::GcalSettingsWatch,
+            },
         },
-        calendar_list::{
-            GcalCalendarList, GcalCalendarListEntry, delete::GcalCalendarListEntryDelete,
-            get::GcalCalendarListEntryGet, insert::GcalCalendarListEntryInsert,
-            list::GcalCalendarListList, list::GcalCalendarListListParams,
-            patch::GcalCalendarListEntryPatch, update::GcalCalendarListEntryUpdate,
-            watch::GcalCalendarListWatch,
-        },
-        calendars::{
-            GcalCalendar, clear::GcalCalendarClear, delete::GcalCalendarDelete,
-            get::GcalCalendarGet, insert::GcalCalendarInsert, patch::GcalCalendarPatch,
-            transfer_ownership::GcalCalendarTransferOwnership, update::GcalCalendarUpdate,
-        },
-        channels::{GcalChannel, stop::GcalChannelStop},
-        colors::{GcalColors, get::GcalColorsGet},
-        events::{
-            GcalEvent, GcalEvents, GcalSendUpdates, delete::GcalEventDelete, get::GcalEventGet,
-            import::GcalEventImport, import::GcalEventImportParams, insert::GcalEventInsert,
-            insert::GcalEventInsertParams, instances::GcalEventInstances,
-            instances::GcalEventInstancesParams, list::GcalEventsList, list::GcalEventsListParams,
-            r#move::GcalEventMove, patch::GcalEventPatch, patch::GcalEventPatchParams,
-            quick_add::GcalEventQuickAdd, update::GcalEventUpdate, update::GcalEventUpdateParams,
-            watch::GcalEventsWatch,
-        },
-        freebusy::{GcalFreeBusyRequest, GcalFreeBusyResponse, query::GcalFreeBusyQuery},
-        settings::{
-            GcalSetting, GcalSettings, get::GcalSettingGet, list::GcalSettingsList,
-            list::GcalSettingsListParams, watch::GcalSettingsWatch,
-        },
+        send::{GcalNoResponse, GcalSendError, GcalSendOutput},
     },
-    v3::send::{GcalNoResponse, GcalSendError, GcalSendOutput},
 };
 
 /// Errors that can occur on the std client.

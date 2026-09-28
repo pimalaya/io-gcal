@@ -6,9 +6,14 @@ mod common;
 use common::*;
 use io_gcal::v3::rest::{
     acl::{
-        GcalAccessRole, GcalAclRule, GcalAclScope, GcalAclScopeType, delete::GcalAclRuleDelete,
-        get::GcalAclRuleGet, insert::GcalAclRuleInsert, list::GcalAclList, list::GcalAclListParams,
-        patch::GcalAclRulePatch, update::GcalAclRuleUpdate, watch::GcalAclWatch,
+        GcalAccessRole, GcalAclRule, GcalAclScope, GcalAclScopeType,
+        delete::GcalAclRuleDelete,
+        get::GcalAclRuleGet,
+        insert::GcalAclRuleInsert,
+        list::{GcalAclList, GcalAclListParams},
+        patch::GcalAclRulePatch,
+        update::GcalAclRuleUpdate,
+        watch::GcalAclWatch,
     },
     channels::{GcalChannel, GcalChannelType},
 };

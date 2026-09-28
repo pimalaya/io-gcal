@@ -6,13 +6,13 @@ use alloc::format;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use serde_variant::to_variant_name;
 use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
+        query::to_field_pairs,
         rest::events::GcalSendUpdates,
         send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
     },
@@ -47,10 +47,8 @@ impl GcalEventDelete {
             .join(&format!("calendars/{calendar_id}/events/{event_id}"))?;
 
         if let Some(send_updates) = send_updates {
-            url.query_pairs_mut().append_pair(
-                "sendUpdates",
-                to_variant_name(&send_updates).unwrap_or_default(),
-            );
+            url.query_pairs_mut()
+                .extend_pairs(to_field_pairs("sendUpdates", &send_updates));
         }
 
         let send = GcalSend::delete_if_match(auth, url, if_match);

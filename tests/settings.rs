@@ -7,7 +7,8 @@ use common::*;
 use io_gcal::v3::rest::{
     channels::{GcalChannel, GcalChannelType},
     settings::{
-        get::GcalSettingGet, list::GcalSettingsList, list::GcalSettingsListParams,
+        get::GcalSettingGet,
+        list::{GcalSettingsList, GcalSettingsListParams},
         watch::GcalSettingsWatch,
     },
 };

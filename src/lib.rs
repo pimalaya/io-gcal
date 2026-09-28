@@ -11,13 +11,13 @@
 //! [io-http]: https://docs.rs/io-http
 //!
 //! io-gcal is the calendar sibling of [io-gmail] (mail) and
-//! [io-people] (contacts): same shape, same vendor, a third Google API.
+//! [io-gpeople] (contacts): same shape, same vendor, a third Google API.
 //! The crate name carries the vendor because "calendar" alone says
 //! nothing about who serves it, the way "msgraph" carries it for
 //! Microsoft.
 //!
 //! [io-gmail]: https://docs.rs/io-gmail
-//! [io-people]: https://docs.rs/io-people
+//! [io-gpeople]: https://docs.rs/io-gpeople
 //!
 //! ## Layers and features
 //!
