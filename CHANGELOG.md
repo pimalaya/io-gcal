@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-28
+
 ### Fixed
 
 - Fixed `no_std` builds pulling in `std` ([io-gmail#2]).
@@ -23,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..HEAD
+[0.1.1]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..v0.1.1
 [0.1.0]: https://github.com/pimalaya/io-gcal/compare/root..v0.1.0
 
 [io-gmail#2]: https://github.com/pimalaya/io-gmail/issues/2
