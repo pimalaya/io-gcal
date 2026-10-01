@@ -48,4 +48,4 @@ jobs:
         env:
           RUST_LOG: trace
           GCAL_SERVICE_ACCOUNT_KEY: ${{ secrets.GCAL_SERVICE_ACCOUNT_KEY }}
-        run: nix develop -c cargo test --features rustls-ring --test google -- --ignored
+        run: nix develop -c cargo test --features rustls-ring,ical --test google -- --ignored
