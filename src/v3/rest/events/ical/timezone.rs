@@ -24,7 +24,7 @@
 use alloc::{borrow::ToOwned, format, string::String, vec, vec::Vec};
 
 use ical::{
-    prop::IcalPropKind,
+    prop::{IcalProp, IcalPropKind},
     tree::cst::IcalCst,
     value::{IcalValue, datetime::IcalDateTime, recur::IcalRecur, utc_offset::IcalUtcOffset},
 };
@@ -33,8 +33,6 @@ use jiff::{
     civil::{self, Weekday},
     tz::{Dst, Offset, TimeZone, TimeZoneTransition},
 };
-
-use crate::v3::rest::events::ical::{component, prop, text_prop};
 
 /// Onset given to an observance the zone dates no better itself.
 ///
@@ -75,8 +73,8 @@ pub fn vtimezone(tzid: &str, anchor: i64) -> Option<IcalCst<'static>> {
     let zone = TimeZone::get(tzid).ok()?;
     let anchor = Timestamp::from_second(anchor).ok()?;
 
-    let mut vtimezone = component("VTIMEZONE");
-    vtimezone.push(text_prop(IcalPropKind::TzId, tzid.to_owned()));
+    let mut vtimezone = IcalCst::empty("VTIMEZONE");
+    vtimezone.push(IcalProp::text(IcalPropKind::TzId, vec![], tzid.to_owned()));
 
     for observance in observances(&zone, anchor)? {
         vtimezone.push_component(observance);
@@ -227,33 +225,42 @@ fn observance(
     onset: civil::DateTime,
     rule: Option<String>,
 ) -> IcalCst<'static> {
-    let mut observance = component(name);
+    let mut observance = IcalCst::empty(name);
 
     if !abbreviation.is_empty() {
-        observance.push(text_prop(IcalPropKind::TzName, abbreviation.to_owned()));
+        observance.push(IcalProp::text(
+            IcalPropKind::TzName,
+            vec![],
+            abbreviation.to_owned(),
+        ));
     }
 
     for (kind, offset) in [
         (IcalPropKind::TzOffsetFrom, from),
         (IcalPropKind::TzOffsetTo, to),
     ] {
-        let value = IcalValue::UtcOffset(IcalUtcOffset(utc_offset(offset).into()));
-        observance.push(prop(kind, value));
+        observance.push(IcalProp {
+            name: kind.into(),
+            params: Vec::new(),
+            value: IcalValue::UtcOffset(IcalUtcOffset(utc_offset(offset).into())),
+        });
     }
 
     // NOTE: RFC 5545 3.6.5 states an observance DTSTART in the local
     // time before its transition, the offset it leaves, so the onset is
     // read in `from` and needs no shifting.
-    observance.push(prop(
-        IcalPropKind::DtStart,
-        IcalValue::DateTime(IcalDateTime(stamp(onset).into())),
-    ));
+    observance.push(IcalProp {
+        name: IcalPropKind::DtStart.into(),
+        params: Vec::new(),
+        value: IcalValue::DateTime(IcalDateTime(stamp(onset).into())),
+    });
 
     if let Some(rule) = rule {
-        observance.push(prop(
-            IcalPropKind::RRule,
-            IcalValue::Recur(IcalRecur(rule.into())),
-        ));
+        observance.push(IcalProp {
+            name: IcalPropKind::RRule.into(),
+            params: Vec::new(),
+            value: IcalValue::Recur(IcalRecur(rule.into())),
+        });
     }
 
     observance

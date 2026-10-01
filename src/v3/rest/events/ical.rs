@@ -103,14 +103,14 @@ impl GcalEvent {
     /// Projects an io-gcal event onto a fresh VCALENDAR document.
     pub fn to_ical(&self) -> String {
         let event = self;
-        let mut vevent = component("VEVENT");
+        let mut vevent = IcalCst::empty("VEVENT");
 
         let uid = event
             .ical_uid
             .clone()
             .or_else(|| event.id.clone())
             .unwrap_or_default();
-        vevent.push(text_prop(IcalPropKind::Uid, uid));
+        vevent.push(IcalProp::text(IcalPropKind::Uid, vec![], uid));
 
         // NOTE: DTSTAMP is mandatory (RFC 5545 3.6.1) and Google carries no
         // field of its own for it, so the last modification time stands in.
@@ -147,23 +147,28 @@ impl GcalEvent {
             (IcalPropKind::Location, &event.location),
         ] {
             if let Some(value) = value {
-                vevent.push(text_prop(kind, value.clone()));
+                vevent.push(IcalProp::text(kind, vec![], value.clone()));
             }
         }
 
         if let Some(status) = event.status {
-            vevent.push(text_prop(IcalPropKind::Status, status_to_ical(status)));
+            vevent.push(IcalProp::text(
+                IcalPropKind::Status,
+                vec![],
+                status_to_ical(status),
+            ));
         }
 
         if let Some(transparency) = event.transparency {
-            vevent.push(text_prop(
+            vevent.push(IcalProp::text(
                 IcalPropKind::Transp,
+                vec![],
                 transparency_to_ical(transparency),
             ));
         }
 
         if let Some(class) = event.visibility.and_then(visibility_to_ical) {
-            vevent.push(text_prop(IcalPropKind::Class, class));
+            vevent.push(IcalProp::text(IcalPropKind::Class, vec![], class));
         }
 
         if let Some(sequence) = event.sequence {
@@ -195,7 +200,7 @@ impl GcalEvent {
             ("X-GOOGLE-HANGOUT-LINK", event.hangout_link.as_deref()),
         ] {
             if let Some(value) = value {
-                vevent.push(unknown_text_prop(name, value));
+                vevent.push(IcalProp::text(name, vec![], value.to_string()));
             }
         }
 
@@ -205,11 +210,19 @@ impl GcalEvent {
             .flat_map(|conference| &conference.entry_points)
             .filter_map(|entry| entry.uri.as_deref())
         {
-            vevent.push(unknown_text_prop("X-GOOGLE-CONFERENCE", uri));
+            vevent.push(IcalProp::text(
+                "X-GOOGLE-CONFERENCE",
+                vec![],
+                uri.to_string(),
+            ));
         }
 
         let mut calendar = IcalCst::v2();
-        calendar.push(text_prop(IcalPropKind::ProdId, PRODID.to_string()));
+        calendar.push(IcalProp::text(
+            IcalPropKind::ProdId,
+            vec![],
+            PRODID.to_string(),
+        ));
         calendar.push_component(vevent);
 
         // NOTE: the recurrence lines and the stash are already iCalendar
@@ -1249,16 +1262,6 @@ fn splice_before(document: String, marker: &str, lines: &[String]) -> String {
     }
 }
 
-/// An empty component with its BEGIN / END envelope.
-pub(super) fn component(name: &'static str) -> IcalCst<'static> {
-    IcalCst {
-        begin: Some(IcalLine::text("BEGIN", name)),
-        items: Vec::new(),
-        end: Some(IcalLine::text("END", name)),
-        trailing: Default::default(),
-    }
-}
-
 /// The wire name of a component: the value of its BEGIN line.
 fn component_name(component: &IcalCst<'_>) -> String {
     component
@@ -1273,34 +1276,13 @@ fn is_named(component: &IcalCst<'_>, name: &str) -> bool {
     component_name(component).eq_ignore_ascii_case(name)
 }
 
-/// A property under a canonical name, carrying no parameter.
-pub(super) fn prop(kind: IcalPropKind, value: IcalValue<'static>) -> IcalProp<'static> {
-    IcalProp {
-        name: IcalPropName::Kind(kind),
-        params: Vec::new(),
-        value,
-    }
-}
-
-/// A canonical text property.
-pub(super) fn text_prop(kind: IcalPropKind, value: String) -> IcalProp<'static> {
-    prop(kind, IcalValue::Text(IcalText(value.into())))
-}
-
-/// A text property under a name outside the iCalendar vocabulary.
-///
-/// Every minted `X-GOOGLE-*` property is one.
-fn unknown_text_prop(name: &'static str, value: &str) -> IcalProp<'static> {
-    IcalProp {
-        name: IcalPropName::Unknown(name.into()),
-        params: Vec::new(),
-        value: IcalValue::Text(IcalText(value.to_string().into())),
-    }
-}
-
 /// A UTC date-time property.
 fn stamp_prop(kind: IcalPropKind, stamp: String) -> IcalProp<'static> {
-    prop(kind, IcalValue::DateTime(IcalDateTime(stamp.into())))
+    IcalProp {
+        name: kind.into(),
+        params: Vec::new(),
+        value: IcalValue::DateTime(IcalDateTime(stamp.into())),
+    }
 }
 
 /// The decoded text of a property line, escapes resolved.
