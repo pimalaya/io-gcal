@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-01
+
 ### Changed
 
 - The VTIMEZONE synthesis of the `ical` feature now comes from ical-rs's `tzdb` feature, where it moved so the Microsoft Graph projection shares it. Nothing changes in what is synthesized.
@@ -37,7 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.2..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.3..HEAD
+[0.1.3]: https://github.com/pimalaya/io-gcal/compare/v0.1.2..v0.1.3
 [0.1.2]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..v0.1.2
 [0.1.1]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..v0.1.1
 [0.1.0]: https://github.com/pimalaya/io-gcal/compare/root..v0.1.0
