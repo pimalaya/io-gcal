@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-01
+
 ### Added
 
 - Added the `ical` feature: `GcalEvent::to_ical`, `to_ical_series` and `from_ical` project an event, or a recurring series with its exceptions, onto an iCalendar document and back, and `merge` carries the provider-only fields of the server copy over.
@@ -31,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.2..HEAD
+[0.1.2]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..v0.1.2
 [0.1.1]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..v0.1.1
 [0.1.0]: https://github.com/pimalaya/io-gcal/compare/root..v0.1.0
 
