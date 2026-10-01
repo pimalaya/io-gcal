@@ -23,6 +23,7 @@ rustls-ring = ["client", "pimalaya-stream/rustls-ring", "dep:anyhow", "dep:pimal
 rustls-aws = ["client", "pimalaya-stream/rustls-aws", "dep:anyhow", "dep:pimalaya-stream"]
 native-tls = ["client", "pimalaya-stream/native-tls", "dep:anyhow", "dep:pimalaya-stream"]
 vendored = ["pimalaya-stream?/vendored"]
+ical = ["dep:ical-rs", "dep:jiff"]
 
 [[example]]
 name = "std_gcal"
@@ -38,7 +39,9 @@ secrecy = { version = "0.10", default-features = false }
 
 [dependencies]
 anyhow = { version = "1", optional = true }
+ical-rs = { version = "0.5", default-features = false, features = ["parser"], optional = true }
 io-http = { version = "0.5", default-features = false }
+jiff = { version = "0.2", default-features = false, features = ["alloc", "tzdb-bundle-always"], optional = true }
 log = { version = "0.4", default-features = false }
 pimalaya-stream = { version = "0.3", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

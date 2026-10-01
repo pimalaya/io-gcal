@@ -16,6 +16,8 @@ use crate::v3::rest::{acl::GcalAccessRole, calendars::GcalConferenceSolutionType
 
 pub mod delete;
 pub mod get;
+#[cfg(feature = "ical")]
+pub mod ical;
 pub mod import;
 pub mod insert;
 pub mod instances;
