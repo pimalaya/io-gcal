@@ -48,6 +48,7 @@ use ical::{
         line::IcalLine,
         param::{cn::CN, cutype::CUTYPE, partstat::PARTSTAT, role::ROLE, tzid::TZID, value::VALUE},
     },
+    tzdb,
     value::{IcalValue, datetime::IcalDateTime, integer::IcalInteger, text::IcalText},
 };
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
@@ -57,8 +58,6 @@ use crate::v3::rest::events::{
     GcalEventExtendedProperties, GcalEventPerson, GcalEventReminder, GcalEventReminderMethod,
     GcalEventReminders, GcalEventStatus, GcalEventTransparency, GcalEventVisibility,
 };
-
-mod timezone;
 
 /// Product identifier the synthesized document carries.
 const PRODID: &str = "-//Pimalaya//calendula//EN";
@@ -472,7 +471,7 @@ impl core::error::Error for GcalEventIcalError {}
 fn define_zones(document: String, anchor: i64) -> String {
     let definitions: Vec<String> = undefined_zones(&document)
         .iter()
-        .filter_map(|zone| timezone::vtimezone(zone, anchor))
+        .filter_map(|zone| tzdb::vtimezone(zone, anchor))
         .flat_map(|definition| raw_component(&definition))
         .collect();
 
@@ -663,7 +662,7 @@ fn is_known_zone(component: &IcalCst<'_>) -> bool {
 
     component
         .prop::<TZID_PROP>()
-        .is_some_and(|tzid| timezone::is_known(&tzid.0))
+        .is_some_and(|tzid| tzdb::is_known(&tzid.0))
 }
 
 /// Whether a calendar-level property is one the projection rewrites.
