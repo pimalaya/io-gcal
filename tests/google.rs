@@ -860,7 +860,10 @@ fn service_account_key() -> Option<String> {
         return None;
     }
 
-    if let Ok(key) = env::var("GCAL_SERVICE_ACCOUNT_KEY") {
+    if let Some(key) = env::var("GCAL_SERVICE_ACCOUNT_KEY")
+        .ok()
+        .filter(|key| !key.is_empty())
+    {
         return Some(key);
     }
 
