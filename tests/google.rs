@@ -63,11 +63,12 @@ use std::{
     borrow::Cow,
     env, fs,
     panic::{self, AssertUnwindSafe},
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use io_gcal::v3::{
-    client::{GcalClientStd, GcalClientStdConnectOptions},
+    client::{GcalClientStd, GcalClientStdConnectOptions, GcalClientStdError},
     rest::{
         acl::{GcalAccessRole, GcalAclRule, GcalAclScope, GcalAclScopeType},
         calendar_list::GcalCalendarListEntry,
@@ -158,9 +159,9 @@ fn subscription() {
                 }),
                 ..Default::default()
             };
-            owner
-                .acl_rule_insert(&id, &rule, Some(false))
-                .expect("acl rule insert");
+            retry("acl rule insert", || {
+                owner.acl_rule_insert(&id, &rule, Some(false))
+            });
 
             calendar_list(&mut subscriber, &id);
         },
@@ -193,19 +194,17 @@ fn ical() {
         |client| {
             let document = ical_document(&uid, "io-gcal ical", true);
             let written = GcalEvent::from_ical(document.as_bytes()).expect("the document projects");
-            let imported = client
-                .event_import(&id, &written, &Default::default())
-                .expect("event import")
-                .response;
+            let imported = retry("event import", || {
+                client.event_import(&id, &written, &Default::default())
+            })
+            .response;
             let event_id = imported
                 .id
                 .clone()
                 .expect("the imported event carries an id");
 
-            let fetched = client
-                .event_get(&id, &event_id, None, None)
-                .expect("event get")
-                .response;
+            let fetched =
+                retry("event get", || client.event_get(&id, &event_id, None, None)).response;
             let read = fetched.to_ical();
             assert!(
                 read.contains("X-PIMALAYA-TEST:kept verbatim"),
@@ -217,16 +216,16 @@ fn ical() {
             let edited_document = ical_document(&uid, "io-gcal ical renamed", false);
             let edited = GcalEvent::from_ical(edited_document.as_bytes())
                 .expect("the edited document projects");
-            let updated = client
-                .event_update(
+            let updated = retry("event update", || {
+                client.event_update(
                     &id,
                     &event_id,
                     &edited.clone().merge(&fetched),
                     &Default::default(),
                     fetched.etag.as_deref(),
                 )
-                .expect("event update")
-                .response;
+            })
+            .response;
             let reread = updated.to_ical();
             let back =
                 GcalEvent::from_ical(reread.as_bytes()).expect("the updated document projects");
@@ -243,7 +242,7 @@ fn ical() {
 /// Reads the account-wide resources: the colour palettes, the user
 /// settings and the calendar list.
 fn account_flow(client: &mut GcalClientStd) {
-    let colors = client.colors_get().expect("colors get").response;
+    let colors = retry("colors get", || client.colors_get()).response;
     assert!(!colors.event.is_empty(), "the event palette is never empty");
     assert!(
         !colors.calendar.is_empty(),
@@ -255,10 +254,10 @@ fn account_flow(client: &mut GcalClientStd) {
     // asserted here is the shape of whatever comes back rather than its
     // presence. That a listing can be walked and an entry fetched by id
     // is covered against a calendar the run owns, in [`calendar`].
-    let settings = client
-        .settings_list(&Default::default())
-        .expect("settings list")
-        .response;
+    let settings = retry("settings list", || {
+        client.settings_list(&Default::default())
+    })
+    .response;
     assert!(
         settings
             .items
@@ -273,10 +272,10 @@ fn account_flow(client: &mut GcalClientStd) {
         assert_eq!(fetched.value, listed.value, "setting get value mismatch");
     }
 
-    let calendars = client
-        .calendar_list_list(&Default::default())
-        .expect("calendar list list")
-        .response;
+    let calendars = retry("calendar list list", || {
+        client.calendar_list_list(&Default::default())
+    })
+    .response;
     assert!(
         calendars
             .items
@@ -325,14 +324,14 @@ fn calendar_flow(client: &mut GcalClientStd) {
 
 /// Creates a secondary calendar and returns its id.
 fn calendar_create(client: &mut GcalClientStd, summary: &str) -> String {
-    let created = client
-        .calendar_insert(&GcalCalendar {
+    let created = retry("calendar insert", || {
+        client.calendar_insert(&GcalCalendar {
             summary: Some(summary.to_owned()),
             time_zone: Some(String::from("Europe/Paris")),
             ..Default::default()
         })
-        .expect("calendar insert")
-        .response;
+    })
+    .response;
 
     created.id.expect("the new calendar carries an id")
 }
@@ -340,20 +339,20 @@ fn calendar_create(client: &mut GcalClientStd, summary: &str) -> String {
 /// Reads back the calendar, patches then replaces it, and checks the
 /// entry the creation added to the calendar list.
 fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
-    let fetched = client.calendar_get(id).expect("calendar get").response;
+    let fetched = retry("calendar get", || client.calendar_get(id)).response;
     assert_eq!(fetched.summary.as_deref(), Some(summary));
     assert_eq!(fetched.time_zone.as_deref(), Some("Europe/Paris"));
 
-    let patched = client
-        .calendar_patch(
+    let patched = retry("calendar patch", || {
+        client.calendar_patch(
             id,
             &GcalCalendar {
                 description: Some(String::from("patched by the io-gcal suite")),
                 ..Default::default()
             },
         )
-        .expect("calendar patch")
-        .response;
+    })
+    .response;
     assert_eq!(
         patched.description.as_deref(),
         Some("patched by the io-gcal suite")
@@ -364,8 +363,8 @@ fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
         "a patch leaves the fields it does not carry alone"
     );
 
-    let updated = client
-        .calendar_update(
+    let updated = retry("calendar update", || {
+        client.calendar_update(
             id,
             &GcalCalendar {
                 summary: Some(summary.to_owned()),
@@ -373,22 +372,22 @@ fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
                 ..Default::default()
             },
         )
-        .expect("calendar update")
-        .response;
+    })
+    .response;
     assert_eq!(updated.summary.as_deref(), Some(summary));
     assert_eq!(
         updated.description, None,
         "an update drops the fields it does not carry"
     );
 
-    let entry = client
-        .calendar_list_entry_get(id)
-        .expect("calendar list entry get")
-        .response;
+    let entry = retry("calendar list entry get", || {
+        client.calendar_list_entry_get(id)
+    })
+    .response;
     assert_eq!(entry.access_role, Some(GcalAccessRole::Owner));
 
-    let renamed = client
-        .calendar_list_entry_patch(
+    let renamed = retry("calendar list entry patch", || {
+        client.calendar_list_entry_patch(
             id,
             &GcalCalendarListEntry {
                 summary_override: Some(String::from("io-gcal override")),
@@ -396,8 +395,8 @@ fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
             },
             None,
         )
-        .expect("calendar list entry patch")
-        .response;
+    })
+    .response;
     assert_eq!(
         renamed.summary_override.as_deref(),
         Some("io-gcal override")
@@ -407,8 +406,8 @@ fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
 /// Creates, imports, reads, writes, expands and deletes events, then
 /// replays the listing incrementally to see the deletion reported.
 fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
-    let event = client
-        .event_insert(
+    let event = retry("event insert", || {
+        client.event_insert(
             calendar_id,
             &GcalEvent {
                 summary: Some(String::from("io-gcal test event")),
@@ -418,19 +417,19 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
             },
             &Default::default(),
         )
-        .expect("event insert")
-        .response;
+    })
+    .response;
     let event_id = event.id.clone().expect("the new event carries an id");
 
-    let fetched = client
-        .event_get(calendar_id, &event_id, None, None)
-        .expect("event get")
-        .response;
+    let fetched = retry("event get", || {
+        client.event_get(calendar_id, &event_id, None, None)
+    })
+    .response;
     assert_eq!(fetched.summary.as_deref(), Some("io-gcal test event"));
     assert!(fetched.ical_uid.is_some(), "the API assigns an iCalUID");
 
-    let patched = client
-        .event_patch(
+    let patched = retry("event patch", || {
+        client.event_patch(
             calendar_id,
             &event_id,
             &GcalEvent {
@@ -442,8 +441,8 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
             // exercises the If-Match path against the live API.
             fetched.etag.as_deref(),
         )
-        .expect("event patch")
-        .response;
+    })
+    .response;
     assert_eq!(patched.location.as_deref(), Some("Somewhere"));
     assert_eq!(
         patched.summary.as_deref(),
@@ -453,24 +452,24 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
 
     let mut replacement = patched.clone();
     replacement.summary = Some(String::from("io-gcal test event renamed"));
-    let updated = client
-        .event_update(
+    let updated = retry("event update", || {
+        client.event_update(
             calendar_id,
             &event_id,
             &replacement,
             &Default::default(),
             None,
         )
-        .expect("event update")
-        .response;
+    })
+    .response;
     assert_eq!(
         updated.summary.as_deref(),
         Some("io-gcal test event renamed")
     );
 
     let ical_uid = format!("{summary}@pimalaya.org");
-    let imported = client
-        .event_import(
+    let imported = retry("event import", || {
+        client.event_import(
             calendar_id,
             &GcalEvent {
                 ical_uid: Some(ical_uid.clone()),
@@ -481,16 +480,16 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
             },
             &Default::default(),
         )
-        .expect("event import")
-        .response;
+    })
+    .response;
     assert_eq!(
         imported.ical_uid.as_deref(),
         Some(ical_uid.as_str()),
         "an import keeps the iCalUID it is given"
     );
 
-    let series = client
-        .event_insert(
+    let series = retry("recurring event insert", || {
+        client.event_insert(
             calendar_id,
             &GcalEvent {
                 summary: Some(String::from("io-gcal test series")),
@@ -505,28 +504,28 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
             },
             &Default::default(),
         )
-        .expect("recurring event insert")
-        .response;
+    })
+    .response;
     let series_id = series.id.clone().expect("the new series carries an id");
 
-    let instances = client
-        .event_instances(
+    let instances = retry("event instances", || {
+        client.event_instances(
             calendar_id,
             &series_id,
             &GcalEventInstancesParams::default(),
         )
-        .expect("event instances")
-        .response;
+    })
+    .response;
     assert_eq!(instances.items.len(), 3, "COUNT=3 expands to three");
 
-    let quick = client
-        .event_quick_add(calendar_id, "io-gcal quick event on 2030-03-05 10am", None)
-        .expect("event quick add")
-        .response;
+    let quick = retry("event quick add", || {
+        client.event_quick_add(calendar_id, "io-gcal quick event on 2030-03-05 10am", None)
+    })
+    .response;
     assert!(quick.id.is_some());
 
-    let baseline = client
-        .events_list(
+    let baseline = retry("events list", || {
+        client.events_list(
             calendar_id,
             &GcalEventsListParams {
                 single_events: true,
@@ -534,8 +533,8 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
                 ..Default::default()
             },
         )
-        .expect("events list")
-        .response;
+    })
+    .response;
     assert!(
         baseline.items.len() >= 5,
         "got {} events",
@@ -546,12 +545,12 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
         .clone()
         .expect("the last page carries a sync token");
 
-    client
-        .event_delete(calendar_id, &event_id, None, None)
-        .expect("event delete");
+    retry("event delete", || {
+        client.event_delete(calendar_id, &event_id, None, None)
+    });
 
-    let changed = client
-        .events_list(
+    let changed = retry("incremental events list", || {
+        client.events_list(
             calendar_id,
             &GcalEventsListParams {
                 single_events: true,
@@ -559,8 +558,8 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
                 ..Default::default()
             },
         )
-        .expect("incremental events list")
-        .response;
+    })
+    .response;
     let deleted = changed
         .items
         .iter()
@@ -571,8 +570,8 @@ fn events(client: &mut GcalClientStd, calendar_id: &str, summary: &str) {
 
 /// Moves an event from one calendar the run owns to the other.
 fn event_move(client: &mut GcalClientStd, from: &str, to: &str) {
-    let event = client
-        .event_insert(
+    let event = retry("event insert", || {
+        client.event_insert(
             from,
             &GcalEvent {
                 summary: Some(String::from("io-gcal test move")),
@@ -582,41 +581,41 @@ fn event_move(client: &mut GcalClientStd, from: &str, to: &str) {
             },
             &Default::default(),
         )
-        .expect("event insert")
-        .response;
+    })
+    .response;
     let event_id = event.id.clone().expect("the new event carries an id");
 
-    let moved = client
-        .event_move(from, &event_id, to, None)
-        .expect("event move")
-        .response;
+    let moved = retry("event move", || {
+        client.event_move(from, &event_id, to, None)
+    })
+    .response;
     assert_eq!(moved.id.as_deref(), Some(event_id.as_str()));
 
-    let fetched = client
-        .event_get(to, &event_id, None, None)
-        .expect("event get in the destination")
-        .response;
+    let fetched = retry("event get in the destination", || {
+        client.event_get(to, &event_id, None, None)
+    })
+    .response;
     assert_eq!(fetched.summary.as_deref(), Some("io-gcal test move"));
 }
 
 /// Adds a calendar shared with the principal to its calendar list,
 /// replaces the entry, then removes it.
 fn calendar_list(client: &mut GcalClientStd, calendar_id: &str) {
-    let inserted = client
-        .calendar_list_entry_insert(
+    let inserted = retry("calendar list entry insert", || {
+        client.calendar_list_entry_insert(
             &GcalCalendarListEntry {
                 id: Some(calendar_id.to_owned()),
                 ..Default::default()
             },
             None,
         )
-        .expect("calendar list entry insert")
-        .response;
+    })
+    .response;
     assert_eq!(inserted.id.as_deref(), Some(calendar_id));
     assert_eq!(inserted.access_role, Some(GcalAccessRole::Reader));
 
-    let updated = client
-        .calendar_list_entry_update(
+    let updated = retry("calendar list entry update", || {
+        client.calendar_list_entry_update(
             calendar_id,
             &GcalCalendarListEntry {
                 summary_override: Some(String::from("io-gcal replaced")),
@@ -624,25 +623,25 @@ fn calendar_list(client: &mut GcalClientStd, calendar_id: &str) {
             },
             None,
         )
-        .expect("calendar list entry update")
-        .response;
+    })
+    .response;
     assert_eq!(
         updated.summary_override.as_deref(),
         Some("io-gcal replaced")
     );
 
-    client
-        .calendar_list_entry_delete(calendar_id)
-        .expect("calendar list entry delete");
+    retry("calendar list entry delete", || {
+        client.calendar_list_entry_delete(calendar_id)
+    });
 }
 
 /// Reads the access control list, adds a rule, rewrites it, then
 /// removes it.
 fn sharing(client: &mut GcalClientStd, calendar_id: &str) {
-    let acl = client
-        .acl_list(calendar_id, &Default::default())
-        .expect("acl list")
-        .response;
+    let acl = retry("acl list", || {
+        client.acl_list(calendar_id, &Default::default())
+    })
+    .response;
     assert!(
         acl.items
             .iter()
@@ -658,20 +657,20 @@ fn sharing(client: &mut GcalClientStd, calendar_id: &str) {
         }),
         ..Default::default()
     };
-    let created = client
-        .acl_rule_insert(calendar_id, &rule, Some(false))
-        .expect("acl rule insert")
-        .response;
+    let created = retry("acl rule insert", || {
+        client.acl_rule_insert(calendar_id, &rule, Some(false))
+    })
+    .response;
     let rule_id = created.id.clone().expect("the new rule carries an id");
 
-    let fetched = client
-        .acl_rule_get(calendar_id, &rule_id)
-        .expect("acl rule get")
-        .response;
+    let fetched = retry("acl rule get", || {
+        client.acl_rule_get(calendar_id, &rule_id)
+    })
+    .response;
     assert_eq!(fetched.role, Some(GcalAccessRole::Reader));
 
-    let patched = client
-        .acl_rule_patch(
+    let patched = retry("acl rule patch", || {
+        client.acl_rule_patch(
             calendar_id,
             &rule_id,
             &GcalAclRule {
@@ -680,14 +679,14 @@ fn sharing(client: &mut GcalClientStd, calendar_id: &str) {
             },
             Some(false),
         )
-        .expect("acl rule patch")
-        .response;
+    })
+    .response;
     assert_eq!(patched.role, Some(GcalAccessRole::FreeBusyReader));
 
-    let updated = client
-        .acl_rule_update(calendar_id, &rule_id, &rule, Some(false))
-        .expect("acl rule update")
-        .response;
+    let updated = retry("acl rule update", || {
+        client.acl_rule_update(calendar_id, &rule_id, &rule, Some(false))
+    })
+    .response;
     assert_eq!(updated.role, Some(GcalAccessRole::Reader));
 
     if let Err(err) = client.acl_rule_delete(calendar_id, &rule_id) {
@@ -706,10 +705,7 @@ fn free_busy(client: &mut GcalClientStd, calendar_id: &str) {
         ..Default::default()
     };
 
-    let response = client
-        .free_busy_query(&request)
-        .expect("free/busy query")
-        .response;
+    let response = retry("free/busy query", || client.free_busy_query(&request)).response;
     let calendar = response
         .calendars
         .get(calendar_id)
@@ -992,4 +988,45 @@ where
 /// behind so it can be removed by hand.
 fn report_leftover(what: &str, id: &str, err: &dyn Debug) {
     eprintln!("WARNING: could not clean up {what} `{id}`, remove it by hand: {err:?}");
+}
+
+/// Runs `call`, retrying with exponential backoff while Google answers
+/// that a rate limit is exceeded, and panics with `what` otherwise.
+///
+/// Calendar signals a quota burst with a 403 rather than a 429, which
+/// [`GcalSendError::is_retryable`] does not count, and asks for an
+/// exponential backoff. A run issues dozens of writes on one principal
+/// within seconds, enough to trip the per-user limit.
+///
+/// [`GcalSendError::is_retryable`]: io_gcal::v3::send::GcalSendError::is_retryable
+fn retry<T>(what: &str, mut call: impl FnMut() -> Result<T, GcalClientStdError>) -> T {
+    let mut delay = Duration::from_secs(2);
+
+    for attempt in 1..=6 {
+        match call() {
+            Ok(out) => return out,
+            Err(err) if attempt < 6 && rate_limited(&err) => {
+                eprintln!("{what}: rate limited, retrying in {delay:?}");
+                thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(err) => panic!("{what}: {err:?}"),
+        }
+    }
+
+    unreachable!("the last attempt either returns or panics")
+}
+
+/// Whether Google refused the call for a rate limit: a transient status,
+/// or the 403 Calendar answers a quota burst with.
+fn rate_limited(err: &GcalClientStdError) -> bool {
+    let GcalClientStdError::Send(err) = err else {
+        return false;
+    };
+
+    err.is_retryable()
+        || (err.status() == Some(403) && {
+            let message = err.to_string().to_lowercase();
+            message.contains("rate limit") || message.contains("usage limits")
+        })
 }

@@ -48,4 +48,6 @@ jobs:
         env:
           RUST_LOG: trace
           GCAL_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-        run: nix develop -c cargo test --features rustls-ring,ical --test google -- --ignored
+        # NOTE: one test at a time: they share the principals, and run
+        # together they burst Google's per-user rate limit.
+        run: nix develop -c cargo test --features rustls-ring,ical --test google -- --ignored --test-threads 1
