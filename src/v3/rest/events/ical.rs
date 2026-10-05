@@ -12,9 +12,15 @@
 //!   birthday, focus-time, out-of-office and working-location blocks) have
 //!   none, so [`GcalEvent::merge`] carries them over from the server copy
 //!   and an update leaves them untouched;
-//! - provider-scoped fields (`htmlLink`, `hangoutLink`, `conferenceData`)
-//!   are minted as read-only `X-GOOGLE-*` properties and consumed on the
-//!   way back;
+//! - provider-scoped fields (`htmlLink`, `hangoutLink`) are minted as
+//!   read-only `X-GOOGLE-*` properties and consumed on the way back;
+//! - the ways of joining a conference (`conferenceData.entryPoints`) are
+//!   minted as read-only `CONFERENCE` properties (RFC 7986 5.11), one per
+//!   entry point, the server value staying authoritative;
+//! - `X-PIMDIR-ONLINE-MEETING:TRUE` (pimdir STORAGE Annex B.1) asks for a
+//!   Google Meet: it becomes a conference create request, which Google
+//!   honours when the write carries `conferenceDataVersion=1`, and is
+//!   never written back;
 //! - everything else is stashed verbatim in `extendedProperties.private`
 //!   and spliced back on read.
 //!
@@ -53,10 +59,15 @@ use ical::{
 };
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
-use crate::v3::rest::events::{
-    GcalEvent, GcalEventAttendee, GcalEventAttendeeResponseStatus, GcalEventDateTime,
-    GcalEventExtendedProperties, GcalEventPerson, GcalEventReminder, GcalEventReminderMethod,
-    GcalEventReminders, GcalEventStatus, GcalEventTransparency, GcalEventVisibility,
+use crate::v3::rest::{
+    calendars::GcalConferenceSolutionType,
+    events::{
+        GcalConferenceData, GcalConferenceSolutionKey, GcalCreateConferenceRequest, GcalEntryPoint,
+        GcalEntryPointType, GcalEvent, GcalEventAttendee, GcalEventAttendeeResponseStatus,
+        GcalEventDateTime, GcalEventExtendedProperties, GcalEventPerson, GcalEventReminder,
+        GcalEventReminderMethod, GcalEventReminders, GcalEventStatus, GcalEventTransparency,
+        GcalEventVisibility,
+    },
 };
 
 /// Product identifier the synthesized document carries.
@@ -87,8 +98,15 @@ const CALENDAR_STASH_PREFIX: &str = "calendula.vcal.";
 const MINTED_PROPS: &[&str] = &[
     "X-GOOGLE-HTML-LINK",
     "X-GOOGLE-HANGOUT-LINK",
+    "CONFERENCE",
+    // NOTE: minted before CONFERENCE was, and still dropped from the
+    // documents a store kept since.
     "X-GOOGLE-CONFERENCE",
 ];
+
+/// The property asking the source for an online meeting of its provider
+/// (pimdir STORAGE Annex B.1).
+const ONLINE_MEETING_PROP: &str = "X-PIMDIR-ONLINE-MEETING";
 
 /// Calendar-level properties the projection rewrites on every read.
 ///
@@ -203,17 +221,14 @@ impl GcalEvent {
             }
         }
 
-        for uri in event
+        for entry in event
             .conference_data
             .iter()
             .flat_map(|conference| &conference.entry_points)
-            .filter_map(|entry| entry.uri.as_deref())
         {
-            vevent.push(IcalProp::text(
-                "X-GOOGLE-CONFERENCE",
-                vec![],
-                uri.to_string(),
-            ));
+            if let Some(prop) = conference_prop(entry) {
+                vevent.push(prop);
+            }
         }
 
         let mut calendar = IcalCst::v2();
@@ -291,10 +306,23 @@ impl GcalEvent {
         let mut event = GcalEvent::default();
         let mut reminders = Vec::new();
         let mut stash = Vec::new();
+        let mut online_meeting = false;
+        let mut stamp = String::new();
 
         for item in &vevent.items {
             match item {
                 IcalItem::Prop(line) => {
+                    let name = line.name.get();
+
+                    if name.eq_ignore_ascii_case(ONLINE_MEETING_PROP) {
+                        online_meeting = line.raw_value_str().trim().eq_ignore_ascii_case("TRUE");
+                        continue;
+                    }
+
+                    if name.eq_ignore_ascii_case("DTSTAMP") {
+                        stamp = line.raw_value_str().trim().to_string();
+                    }
+
                     if !consume_prop(&mut event, line) {
                         stash.push(raw_line(line));
                     }
@@ -336,6 +364,13 @@ impl GcalEvent {
                     boundary.time_zone = Some(String::from("UTC"));
                 }
             }
+        }
+
+        if online_meeting {
+            event.conference_data = Some(meet_request(
+                event.ical_uid.as_deref().unwrap_or_default(),
+                &stamp,
+            ));
         }
 
         let calendar_stash = calendar.map(calendar_remainder).unwrap_or_default();
@@ -387,6 +422,20 @@ impl GcalEvent {
         if !private.is_empty() || !shared.is_empty() {
             projected.extended_properties = Some(GcalEventExtendedProperties { private, shared });
         }
+
+        // NOTE: a projection never carries the conference itself, only a
+        // create request when the document asks for a meeting. The one the
+        // server holds stays, as does a request still pending: a write with
+        // `conferenceDataVersion=1` would drop either if the payload left
+        // it out.
+        projected.conference_data = match current.conference_data.clone() {
+            Some(conference)
+                if !conference.entry_points.is_empty() || projected.conference_data.is_none() =>
+            {
+                Some(conference)
+            }
+            _ => projected.conference_data.take(),
+        };
 
         carry_display_zone(&mut projected.start, current.start.as_ref());
         carry_display_zone(&mut projected.end, current.end.as_ref());
@@ -747,6 +796,66 @@ fn consume_prop(event: &mut GcalEvent, line: &IcalLine<'_>) -> bool {
         // is consumed rather than stashed and never written back.
         IcalPropKind::DtStamp | IcalPropKind::Created | IcalPropKind::LastModified => true,
         _ => false,
+    }
+}
+
+/// The CONFERENCE property of one way of joining a conference.
+///
+/// RFC 7986 5.11 requires the URI value type and allows one property per
+/// entry point, each saying what it offers in FEATURE. An entry point
+/// without a URI projects to nothing.
+fn conference_prop(entry: &GcalEntryPoint) -> Option<IcalProp<'static>> {
+    let uri = entry.uri.as_deref().filter(|uri| !uri.is_empty())?;
+    let mut params = vec![IcalParam::Value("URI".into())];
+
+    let features: &[&str] = match entry.entry_point_type {
+        Some(GcalEntryPointType::Video) => &["AUDIO", "VIDEO"],
+        Some(GcalEntryPointType::Phone) => &["PHONE"],
+        Some(GcalEntryPointType::Sip) => &["AUDIO"],
+        Some(GcalEntryPointType::More) | None => &[],
+    };
+
+    if !features.is_empty() {
+        params.push(IcalParam::Feature(
+            features.iter().map(|feature| (*feature).into()).collect(),
+        ));
+    }
+
+    if let Some(label) = entry.label.as_deref().filter(|label| !label.is_empty()) {
+        params.push(IcalParam::Label(label.to_string().into()));
+    }
+
+    Some(IcalProp {
+        name: IcalPropName::Kind(IcalPropKind::Conference),
+        params,
+        value: IcalValue::Uri(uri.to_string().into()),
+    })
+}
+
+/// A request for a new Google Meet attached to the event.
+///
+/// Google replays the outcome of a request id it has already seen, so the
+/// id is drawn from the document (UID and DTSTAMP): pushing the same
+/// document again never creates a second meeting.
+fn meet_request(uid: &str, stamp: &str) -> GcalConferenceData {
+    // NOTE: FNV-1a, enough to keep the id short and stable; it guards
+    // against nothing but a replay.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+
+    for byte in uid.bytes().chain([0]).chain(stamp.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+
+    GcalConferenceData {
+        create_request: Some(GcalCreateConferenceRequest {
+            request_id: Some(format!("pimdir-{hash:016x}")),
+            conference_solution_key: Some(GcalConferenceSolutionKey {
+                solution_type: Some(GcalConferenceSolutionType::HangoutsMeet),
+            }),
+            status: None,
+        }),
+        ..GcalConferenceData::default()
     }
 }
 
@@ -1795,6 +1904,145 @@ mod tests {
             Some("keep me")
         );
         assert!(private.contains_key(&format!("{EVENT_STASH_PREFIX}0")));
+    }
+
+    /// A Meet with a video and a phone entry point.
+    fn meet() -> GcalConferenceData {
+        GcalConferenceData {
+            entry_points: vec![
+                GcalEntryPoint {
+                    entry_point_type: Some(GcalEntryPointType::Video),
+                    uri: Some(String::from("https://meet.example.org/abc-defg-hij")),
+                    label: Some(String::from("meet.example.org/abc-defg-hij")),
+                    ..GcalEntryPoint::default()
+                },
+                GcalEntryPoint {
+                    entry_point_type: Some(GcalEntryPointType::Phone),
+                    uri: Some(String::from("tel:+33-1-00-00-00-00")),
+                    label: Some(String::from("+33 1 00 00 00 00")),
+                    pin: Some(String::from("123456")),
+                    ..GcalEntryPoint::default()
+                },
+            ],
+            ..GcalConferenceData::default()
+        }
+    }
+
+    #[test]
+    fn each_entry_point_is_minted_as_a_conference_and_dropped_on_the_way_back() {
+        let mut event = event();
+        event.conference_data = Some(meet());
+
+        let document = event.to_ical();
+
+        assert!(
+            document.contains(
+                "CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO;LABEL=meet.example.org/abc-defg-hij:https://meet.example.org/abc-defg-hij\r\n"
+            ),
+            "{document}"
+        );
+        assert!(
+            document.contains("CONFERENCE;VALUE=URI;FEATURE=PHONE;LABEL=+33 1 00 00 00 00:tel:+33-1-00-00-00-00\r\n"),
+            "{document}"
+        );
+        assert!(!document.contains("X-GOOGLE-CONFERENCE"), "{document}");
+
+        let back = GcalEvent::from_ical(document.as_bytes()).unwrap();
+        assert_eq!(back.conference_data, None);
+        assert!(!format!("{:?}", back.extended_properties).contains("CONFERENCE"));
+    }
+
+    #[test]
+    fn a_conference_minted_under_its_former_name_is_dropped_too() {
+        let legacy = CALENDAR.replace(
+            "SUMMARY:Stand-up\r\n",
+            "SUMMARY:Stand-up\r\nX-GOOGLE-CONFERENCE:https://meet.example.org/x\r\n",
+        );
+        let event = GcalEvent::from_ical(legacy.as_bytes()).unwrap();
+        assert!(!format!("{:?}", event.extended_properties).contains("X-GOOGLE-CONFERENCE"));
+    }
+
+    #[test]
+    fn an_online_meeting_asked_for_becomes_a_stable_meet_request() {
+        let asked = CALENDAR.replace(
+            "SUMMARY:Stand-up\r\n",
+            "SUMMARY:Stand-up\r\nX-PIMDIR-ONLINE-MEETING:TRUE\r\n",
+        );
+        let event = GcalEvent::from_ical(asked.as_bytes()).unwrap();
+
+        let request = event
+            .conference_data
+            .as_ref()
+            .and_then(|conference| conference.create_request.as_ref())
+            .expect("a create request");
+        assert_eq!(
+            request
+                .conference_solution_key
+                .as_ref()
+                .and_then(|key| key.solution_type),
+            Some(GcalConferenceSolutionType::HangoutsMeet)
+        );
+        let id = request.request_id.clone().unwrap();
+        assert!(id.starts_with("pimdir-"), "{id}");
+        assert!(!format!("{:?}", event.extended_properties).contains("ONLINE-MEETING"));
+
+        // NOTE: the same document asks again with the same id, so Google
+        // replays the meeting instead of minting a second one.
+        let again = GcalEvent::from_ical(asked.as_bytes()).unwrap();
+        assert_eq!(
+            again
+                .conference_data
+                .unwrap()
+                .create_request
+                .unwrap()
+                .request_id,
+            Some(id.clone())
+        );
+
+        let restamped = asked.replace("DTSTAMP:20260101T000000Z", "DTSTAMP:20260102T000000Z");
+        let other = GcalEvent::from_ical(restamped.as_bytes()).unwrap();
+        assert_ne!(
+            other
+                .conference_data
+                .unwrap()
+                .create_request
+                .unwrap()
+                .request_id,
+            Some(id)
+        );
+
+        let declined = CALENDAR.replace(
+            "SUMMARY:Stand-up\r\n",
+            "SUMMARY:Stand-up\r\nX-PIMDIR-ONLINE-MEETING:FALSE\r\n",
+        );
+        let event = GcalEvent::from_ical(declined.as_bytes()).unwrap();
+        assert_eq!(event.conference_data, None);
+        assert!(!format!("{:?}", event.extended_properties).contains("ONLINE-MEETING"));
+    }
+
+    #[test]
+    fn a_merge_keeps_the_conference_the_server_holds() {
+        let mut current = event();
+        current.conference_data = Some(meet());
+
+        let merged = event().merge(&current);
+        assert_eq!(merged.conference_data, Some(meet()));
+
+        // NOTE: asking again for a meeting the event already has creates
+        // none (Annex B.1: only a component the current one lacks).
+        let asked = CALENDAR.replace(
+            "SUMMARY:Stand-up\r\n",
+            "SUMMARY:Stand-up\r\nX-PIMDIR-ONLINE-MEETING:TRUE\r\n",
+        );
+        let merged = GcalEvent::from_ical(asked.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.conference_data, Some(meet()));
+
+        let merged = GcalEvent::from_ical(asked.as_bytes())
+            .unwrap()
+            .merge(&event());
+        assert!(merged.conference_data.unwrap().create_request.is_some());
     }
 
     #[test]
