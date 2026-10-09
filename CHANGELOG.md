@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### Added
 
 - `GcalEvent::from_ical` reads `X-PIMDIR-ONLINE-MEETING:TRUE` (pimdir STORAGE Annex B.1) as a request for a Google Meet: a `conferenceData.createRequest` whose id is drawn from the UID and DTSTAMP, so pushing the same document again replays the meeting instead of creating another. Google honours it on a write carrying `conferenceDataVersion=1`. The property is never stashed.
 
 ### Changed
 
+- Bumped ical-rs to 0.6, whose `IcalParseError` `GcalEventIcalError::Parse` carries. Lines built from Google are folded at 75 octets. **Breaking.**
 - The ways of joining a conference are minted as standard `CONFERENCE` properties (RFC 7986 5.11), one per entry point, with `VALUE=URI`, its `FEATURE` (`AUDIO,VIDEO` for video, `PHONE`, `AUDIO` for SIP) and its `LABEL`, instead of `X-GOOGLE-CONFERENCE`. Both are dropped by `from_ical`, the server value staying authoritative.
 - `GcalEvent::merge` keeps the conference the server holds, and a create request still pending, so a write with `conferenceDataVersion=1` never drops them; a requested meeting is only asked for when the event has none.
 - One occurrence of a series is written through its instance: `GcalEvent::from_ical` reads a document holding it alone, its RECURRENCE-ID as `originalStartTime` instead of a stashed line, and `merge` keeps the `recurringEventId` and `originalStartTime` of the server copy. `to_ical` writes the RECURRENCE-ID of any event carrying an `originalStartTime`, so such a document round-trips.
@@ -53,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.1.3..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.2.0..HEAD
+[0.2.0]: https://github.com/pimalaya/io-gcal/compare/v0.1.3..v0.2.0
 [0.1.3]: https://github.com/pimalaya/io-gcal/compare/v0.1.2..v0.1.3
 [0.1.2]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..v0.1.2
 [0.1.1]: https://github.com/pimalaya/io-gcal/compare/v0.1.0..v0.1.1
