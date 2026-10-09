@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The ways of joining a conference are minted as standard `CONFERENCE` properties (RFC 7986 5.11), one per entry point, with `VALUE=URI`, its `FEATURE` (`AUDIO,VIDEO` for video, `PHONE`, `AUDIO` for SIP) and its `LABEL`, instead of `X-GOOGLE-CONFERENCE`. Both are dropped by `from_ical`, the server value staying authoritative.
 - `GcalEvent::merge` keeps the conference the server holds, and a create request still pending, so a write with `conferenceDataVersion=1` never drops them; a requested meeting is only asked for when the event has none.
+- One occurrence of a series is written through its instance: `GcalEvent::from_ical` reads a document holding it alone, its RECURRENCE-ID as `originalStartTime` instead of a stashed line, and `merge` keeps the `recurringEventId` and `originalStartTime` of the server copy. `to_ical` writes the RECURRENCE-ID of any event carrying an `originalStartTime`, so such a document round-trips.
+
+### Fixed
+
+- `GcalEvent::from_ical` read the first VEVENT of a document, an override when it came before its series: it now reads the series master, the VEVENT without RECURRENCE-ID.
 
 ## [0.1.3] - 2026-10-01
 

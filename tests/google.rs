@@ -42,7 +42,8 @@
 //! [`subscription`] shares such a calendar from the service account
 //! with the delegated user, and only runs on a service account key.
 //! With the `ical` feature, [`ical`] round-trips an event through the
-//! iCalendar projection.
+//! iCalendar projection, and [`ical_instances`] writes single occurrences
+//! of a series through their instances.
 //!
 //! The push channels are deliberately left out: a `watch` needs a
 //! publicly reachable HTTPS webhook Google can POST to, which a test
@@ -230,6 +231,178 @@ fn ical() {
             let back =
                 GcalEvent::from_ical(reread.as_bytes()).expect("the updated document projects");
             assert_same_projection(&edited, &back, &edited_document, &reread);
+        },
+        |client| {
+            if let Err(err) = client.calendar_delete(&id) {
+                report_leftover("calendar", &id, &err);
+            }
+        },
+    );
+}
+
+/// One occurrence written through its instance, as a calendar client
+/// pushes an override: moved, deleted, reverted, and edited beside its
+/// series, each read back through `to_ical_series`.
+#[cfg(feature = "ical")]
+#[test]
+#[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
+fn ical_instances() {
+    let mut client = connect(Principal::ServiceAccount);
+    let summary = format!("io-gcal-test-{}", unix_millis());
+    let uid = format!("{summary}@pimalaya.org");
+    let id = calendar_create(&mut client, &summary);
+
+    // NOTE: a document holding one occurrence of the series alone, the
+    // one of 10:00 in Paris on `day`, starting at `hour`.
+    let occurrence = |day: &str, hour: &str, summary: &str, extra: &str| {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//pimalaya//io-gcal tests//EN\r\n\
+             BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20300101T000000Z\r\n\
+             RECURRENCE-ID;TZID=Europe/Paris:{day}T100000\r\n\
+             DTSTART;TZID=Europe/Paris:{day}T{hour}0000\r\n\
+             DTEND;TZID=Europe/Paris:{day}T{hour}3000\r\n\
+             SUMMARY:{summary}\r\n{extra}END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    };
+    let series = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//pimalaya//io-gcal tests//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20300101T000000Z\r\n\
+         DTSTART;TZID=Europe/Paris:20300110T100000\r\n\
+         DTEND;TZID=Europe/Paris:20300110T103000\r\n\
+         RRULE:FREQ=WEEKLY;COUNT=4\r\nSUMMARY:{summary}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+
+    with_cleanup(
+        &mut client,
+        |client| {
+            let written = GcalEvent::from_ical(series.as_bytes()).expect("the series projects");
+            let master = retry("series import", || {
+                client.event_import(&id, &written, &Default::default())
+            })
+            .response;
+            let master_id = master.id.clone().expect("the series carries an id");
+
+            let instance_of = |client: &mut GcalClientStd, day: &str| {
+                let params = GcalEventInstancesParams {
+                    time_min: Some("2030-01-01T00:00:00Z"),
+                    time_max: Some("2030-02-01T00:00:00Z"),
+                    ..Default::default()
+                };
+                let identity = format!("RECURRENCE-ID;TZID=Europe/Paris:{day}T100000\r\n");
+                retry("series instances", || {
+                    client.event_instances(&id, &master_id, &params)
+                })
+                .response
+                .items
+                .into_iter()
+                .find(|instance| instance.to_ical().contains(&identity))
+                .unwrap_or_else(|| panic!("no instance on {day}"))
+            };
+            let read = |client: &mut GcalClientStd| {
+                let params = GcalEventsListParams {
+                    ical_uid: Some(&uid),
+                    show_deleted: true,
+                    ..Default::default()
+                };
+                let events = retry("series listing", || client.events_list(&id, &params))
+                    .response
+                    .items;
+                let (masters, instances): (Vec<GcalEvent>, Vec<GcalEvent>) = events
+                    .into_iter()
+                    .partition(|event| event.recurring_event_id.is_none());
+                let instances: Vec<&GcalEvent> = instances.iter().collect();
+                masters[0].to_ical_series(&instances)
+            };
+            let replace = |client: &mut GcalClientStd, document: &str, current: &GcalEvent| {
+                let event = GcalEvent::from_ical(document.as_bytes())
+                    .expect("the document projects")
+                    .merge(current);
+                let event_id = current.id.clone().expect("the event carries an id");
+                retry("event update", || {
+                    client.event_update(
+                        &id,
+                        &event_id,
+                        &event,
+                        &Default::default(),
+                        current.etag.as_deref(),
+                    )
+                })
+                .response
+            };
+
+            // Moved: the instance takes the override's times, and stays
+            // the instance of its series.
+            let target = instance_of(client, "20300117");
+            let moved = replace(client, &occurrence("20300117", "12", &summary, ""), &target);
+            assert_eq!(
+                moved.recurring_event_id.as_deref(),
+                Some(master_id.as_str())
+            );
+
+            // Deleted: the instance goes, cancelled.
+            let target = instance_of(client, "20300124");
+            let target_id = target.id.clone().expect("the instance carries an id");
+            retry("instance delete", || {
+                client.event_delete(&id, &target_id, None, target.etag.as_deref())
+            });
+
+            let document = read(client);
+            for expected in [
+                "RECURRENCE-ID;TZID=Europe/Paris:20300117T100000\r\n",
+                "DTSTART;TZID=Europe/Paris:20300117T120000\r\n",
+                "RECURRENCE-ID;TZID=Europe/Paris:20300124T100000\r\n",
+                "STATUS:CANCELLED\r\n",
+            ] {
+                assert!(
+                    document.contains(expected),
+                    "missing `{expected}`:\n{document}"
+                );
+            }
+
+            // Reverted: the series' own times, back on the exception.
+            let exception = instance_of(client, "20300117");
+            replace(
+                client,
+                &occurrence("20300117", "10", &summary, ""),
+                &exception,
+            );
+
+            // The series and one occurrence, in one push: the master
+            // replaced, then the instance.
+            let renamed = format!("{summary} renamed");
+            let master = retry("series get", || {
+                client.event_get(&id, &master_id, None, None)
+            })
+            .response;
+            replace(
+                client,
+                &series.replace(&format!("SUMMARY:{summary}"), &format!("SUMMARY:{renamed}")),
+                &master,
+            );
+            let target = instance_of(client, "20300131");
+            replace(
+                client,
+                &occurrence("20300131", "10", &renamed, "LOCATION:Room 3\r\n"),
+                &target,
+            );
+
+            let document = read(client);
+            assert!(
+                !document.contains("DTSTART;TZID=Europe/Paris:20300117T120000\r\n"),
+                "the revert reaches Google:\n{document}"
+            );
+            assert!(
+                document.contains(&format!("SUMMARY:{renamed}\r\n")),
+                "the series edit reaches Google:\n{document}"
+            );
+            assert!(
+                document.contains("LOCATION:Room 3\r\n"),
+                "the occurrence edit reaches Google:\n{document}"
+            );
+            assert!(
+                document.contains("STATUS:CANCELLED\r\n"),
+                "the deletion stands:\n{document}"
+            );
         },
         |client| {
             if let Err(err) = client.calendar_delete(&id) {

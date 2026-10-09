@@ -24,6 +24,12 @@
 //! - everything else is stashed verbatim in `extendedProperties.private`
 //!   and spliced back on read.
 //!
+//! A series is written through its master, and one occurrence through its
+//! instance: [`GcalEvent::from_ical`] reads the master of a document, the
+//! VEVENT replacing no instance, or the one occurrence a document holds
+//! alone, its RECURRENCE-ID as `originalStartTime`, and
+//! [`GcalEvent::merge`] keeps the instance the server copy names.
+//!
 //! `created` and `updated` project onto CREATED and LAST-MODIFIED, but
 //! Google stamps them itself, so an incoming CREATED or LAST-MODIFIED is
 //! consumed rather than written. Every TZID the document names gets a
@@ -41,11 +47,10 @@ use alloc::{
 };
 
 use ical::{
-    component::vevent::VEVENT,
     param::IcalParam,
     prop::{
-        IcalProp, IcalPropKind, IcalPropName, action::ACTION, trigger::TRIGGER,
-        tzid::TZID as TZID_PROP,
+        IcalProp, IcalPropKind, IcalPropName, action::ACTION, recurrence_id::RECURRENCE_ID,
+        trigger::TRIGGER, tzid::TZID as TZID_PROP,
     },
     tree::{
         codec::Codec,
@@ -152,9 +157,7 @@ impl GcalEvent {
         // instance it replaces with a RECURRENCE-ID (RFC 5545 3.8.4.4).
         // Without it the two cannot be filed as the one resource RFC 4791
         // 4.1 requires them to share.
-        if event.recurring_event_id.is_some()
-            && let Some(original) = &event.original_start_time
-        {
+        if let Some(original) = &event.original_start_time {
             push_boundary(&mut vevent, IcalPropKind::RecurrenceId, original);
         }
 
@@ -295,6 +298,11 @@ impl GcalEvent {
     }
 
     /// Projects an iCalendar document back onto an io-gcal event.
+    ///
+    /// The event is the series master of a document holding several
+    /// VEVENTs, the one replacing no instance; the exceptions of a series
+    /// are written through their instance, each from a document holding it
+    /// alone.
     ///
     /// Only the managed fields and the stash are filled: a provider-only
     /// field has no iCalendar source, and [`merge`](Self::merge) carries it over from
@@ -440,12 +448,19 @@ impl GcalEvent {
         carry_display_zone(&mut projected.start, current.start.as_ref());
         carry_display_zone(&mut projected.end, current.end.as_ref());
 
+        let original_start_time = projected.original_start_time.take();
+
         GcalEvent {
             // NOTE: Google stamps these itself and ignores an attempt to set
             // them; they ride along so the payload stays recognizable.
             id: current.id.clone(),
             created: current.created.clone(),
             updated: current.updated.clone(),
+
+            // NOTE: an instance stays the one the server names: its series,
+            // and the start it replaces as Google spelled it.
+            recurring_event_id: current.recurring_event_id.clone(),
+            original_start_time: current.original_start_time.clone().or(original_start_time),
 
             // NOTE: the provider-only fields have no iCalendar slot, so
             // they come from the server copy and the write leaves them
@@ -663,7 +678,19 @@ fn take_vevent<'a>(
         return Ok((calendar, None));
     }
 
-    if let Some(vevent) = calendar.component::<VEVENT>() {
+    let vevents = || {
+        calendar.items.iter().filter_map(|item| match item {
+            IcalItem::Component(child) if is_named(child, "VEVENT") => Some(child.as_ref()),
+            _ => None,
+        })
+    };
+
+    // NOTE: the master replaces no instance, and a document holding one
+    // occurrence alone is read as that occurrence.
+    if let Some(vevent) = vevents()
+        .find(|vevent| vevent.prop::<RECURRENCE_ID>().is_none())
+        .or_else(|| vevents().next())
+    {
         return Ok((vevent, Some(calendar)));
     }
 
@@ -763,6 +790,10 @@ fn consume_prop(event: &mut GcalEvent, line: &IcalLine<'_>) -> bool {
         IcalPropKind::DtEnd => {
             event.end = boundary(line);
             event.end.is_some()
+        }
+        IcalPropKind::RecurrenceId => {
+            event.original_start_time = boundary(line);
+            event.original_start_time.is_some()
         }
         IcalPropKind::Status => {
             event.status = status_from_ical(&line.raw_value_str());
@@ -1612,9 +1643,9 @@ mod tests {
     }
 
     /// A TZID reaches the document through more than the boundaries: an
-    /// EXDATE, an RDATE or a RECURRENCE-ID rides the stash. Collecting
-    /// only the zones the boundaries named would leave those dangling,
-    /// their definition being no longer stashed either.
+    /// EXDATE or an RDATE is spliced back verbatim. Collecting only the
+    /// zones the boundaries named would leave those dangling, their
+    /// definition being no longer stashed either.
     #[test]
     fn a_zone_named_by_a_stashed_line_is_defined_too() {
         let raw = CALENDAR.replace(
@@ -2154,5 +2185,73 @@ mod tests {
         // owes a VTIMEZONE minted over the folded document.
         assert!(document.contains("TZID=Europe/Paris"), "{document}");
         assert!(document.contains("TZID:Europe/Paris\r\n"), "{document}");
+    }
+
+    /// The stand-up of 11 August moved an hour later, on its own.
+    const OVERRIDE: &str = concat!(
+        "BEGIN:VEVENT\r\n",
+        "UID:event-1@example.org\r\n",
+        "RECURRENCE-ID;TZID=Europe/Paris:20260811T090000\r\n",
+        "DTSTART;TZID=Europe/Paris:20260811T100000\r\n",
+        "DTEND;TZID=Europe/Paris:20260811T110000\r\n",
+        "SUMMARY:Stand-up moved\r\n",
+        "END:VEVENT\r\n",
+    );
+
+    #[test]
+    fn a_document_holding_one_occurrence_reads_as_that_instance() {
+        let document = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{OVERRIDE}END:VCALENDAR\r\n");
+
+        let instance = GcalEvent::from_ical(document.as_bytes()).unwrap();
+
+        let original = instance.original_start_time.as_ref().unwrap();
+        assert_eq!(original.date_time.as_deref(), Some("2026-08-11T09:00:00"));
+        assert_eq!(original.time_zone.as_deref(), Some("Europe/Paris"));
+        assert_eq!(instance.summary.as_deref(), Some("Stand-up moved"));
+        assert!(instance.recurrence.is_empty());
+        assert!(
+            instance.extended_properties.is_none(),
+            "the identity is not stashed: {:?}",
+            instance.extended_properties
+        );
+        assert!(
+            instance
+                .to_ical()
+                .contains("RECURRENCE-ID;TZID=Europe/Paris:20260811T090000\r\n")
+        );
+    }
+
+    #[test]
+    fn a_series_reads_as_its_master_whatever_comes_first() {
+        let document = CALENDAR.replace("BEGIN:VEVENT\r\n", &format!("{OVERRIDE}BEGIN:VEVENT\r\n"));
+
+        let master = GcalEvent::from_ical(document.as_bytes()).unwrap();
+
+        assert_eq!(master, event());
+    }
+
+    #[test]
+    fn a_merge_keeps_the_instance_the_server_names() {
+        let document = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{OVERRIDE}END:VCALENDAR\r\n");
+        let original = GcalEventDateTime {
+            date_time: Some(String::from("2026-08-11T09:00:00+02:00")),
+            time_zone: Some(String::from("Europe/Paris")),
+            ..Default::default()
+        };
+        let current = GcalEvent {
+            id: Some(String::from("master-1_20260811T070000Z")),
+            recurring_event_id: Some(String::from("master-1")),
+            original_start_time: Some(original.clone()),
+            ..Default::default()
+        };
+
+        let merged = GcalEvent::from_ical(document.as_bytes())
+            .unwrap()
+            .merge(&current);
+
+        assert_eq!(merged.id, current.id);
+        assert_eq!(merged.recurring_event_id.as_deref(), Some("master-1"));
+        assert_eq!(merged.original_start_time, Some(original));
+        assert_eq!(merged.summary.as_deref(), Some("Stand-up moved"));
     }
 }
