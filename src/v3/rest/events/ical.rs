@@ -1965,15 +1965,17 @@ mod tests {
         event.conference_data = Some(meet());
 
         let document = event.to_ical();
+        // NOTE: a line past 75 octets may come folded (RFC 5545 3.1).
+        let unfolded = document.replace("\r\n ", "");
 
         assert!(
-            document.contains(
+            unfolded.contains(
                 "CONFERENCE;VALUE=URI;FEATURE=AUDIO,VIDEO;LABEL=meet.example.org/abc-defg-hij:https://meet.example.org/abc-defg-hij\r\n"
             ),
             "{document}"
         );
         assert!(
-            document.contains("CONFERENCE;VALUE=URI;FEATURE=PHONE;LABEL=+33 1 00 00 00 00:tel:+33-1-00-00-00-00\r\n"),
+            unfolded.contains("CONFERENCE;VALUE=URI;FEATURE=PHONE;LABEL=+33 1 00 00 00 00:tel:+33-1-00-00-00-00\r\n"),
             "{document}"
         );
         assert!(!document.contains("X-GOOGLE-CONFERENCE"), "{document}");
