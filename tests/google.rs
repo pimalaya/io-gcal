@@ -75,7 +75,8 @@ use io_gcal::v3::{
         calendar_list::GcalCalendarListEntry,
         calendars::GcalCalendar,
         events::{
-            GcalEvent, GcalEventDateTime, GcalEventStatus, instances::GcalEventInstancesParams,
+            GcalEvent, GcalEventAttendee, GcalEventDateTime, GcalEventStatus, GcalSendUpdates,
+            insert::GcalEventInsertParams, instances::GcalEventInstancesParams,
             list::GcalEventsListParams,
         },
         freebusy::{GcalFreeBusyRequest, GcalFreeBusyRequestItem},
@@ -127,6 +128,73 @@ fn calendar() {
 #[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
 fn delegated_calendar() {
     calendar_flow(&mut connect(Principal::Delegated));
+}
+
+/// An event inserted with an `iCalUID` keeps it, and Google invites its
+/// one guest: the delegated user, since a service account cannot invite
+/// anyone without domain-wide delegation. The guest is the Microsoft test
+/// mailbox, which receives the invitation and the cancellation.
+#[test]
+#[ignore = "requires a service account key and --ignored"]
+fn insert_keeps_ical_uid() {
+    let mut client = connect(Principal::Delegated);
+    let summary = format!("io-gcal-test-{}", unix_millis());
+    let uid = format!("{summary}@pimalaya.org");
+    let id = calendar_create(&mut client, &summary);
+    let notify = GcalEventInsertParams {
+        send_updates: Some(GcalSendUpdates::All),
+        ..Default::default()
+    };
+
+    with_cleanup(
+        &mut client,
+        |client| {
+            let event = GcalEvent {
+                ical_uid: Some(uid.clone()),
+                summary: Some(String::from("io-gcal insert keeps its iCalUID")),
+                start: Some(timed("2026-11-02T09:00:00Z")),
+                end: Some(timed("2026-11-02T09:30:00Z")),
+                attendees: vec![GcalEventAttendee {
+                    email: Some(String::from("microsoft@pimalaya.onmicrosoft.com")),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let inserted =
+                retry("event insert", || client.event_insert(&id, &event, &notify)).response;
+            let event_id = inserted
+                .id
+                .clone()
+                .expect("the inserted event carries an id");
+            assert_eq!(inserted.ical_uid.as_deref(), Some(uid.as_str()));
+
+            let fetched =
+                retry("event get", || client.event_get(&id, &event_id, None, None)).response;
+            assert_eq!(fetched.ical_uid.as_deref(), Some(uid.as_str()));
+            assert_eq!(fetched.attendees.len(), 1);
+
+            let params = GcalEventsListParams {
+                ical_uid: Some(&uid),
+                ..Default::default()
+            };
+            let listed = retry("events list", || client.events_list(&id, &params)).response;
+            let ids: Vec<_> = listed
+                .items
+                .iter()
+                .filter_map(|e| e.id.as_deref())
+                .collect();
+            assert_eq!(ids, [event_id.as_str()], "the listing by iCalUID finds it");
+
+            retry("event delete", || {
+                client.event_delete(&id, &event_id, Some(GcalSendUpdates::All), None)
+            });
+        },
+        |client| {
+            if let Err(err) = client.calendar_delete(&id) {
+                report_leftover("calendar", &id, &err);
+            }
+        },
+    );
 }
 
 /// Subscribes the delegated user to a calendar of the service account.
