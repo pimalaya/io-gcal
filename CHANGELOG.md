@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `GcalEvent::from_ical` accepts a VEVENT giving its end as a DURATION (RFC 5545 3.8.2.5) instead of refusing it with `NoEnd`: the end is computed from the DTSTART, in its zone and its shape, and the DURATION is dropped, so the event reads back with a DTEND. A negative DURATION, or one with hours after a `VALUE=DATE` start, is still refused.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

@@ -62,7 +62,11 @@ use ical::{
     tzdb,
     value::{IcalValue, datetime::IcalDateTime, integer::IcalInteger, text::IcalText},
 };
-use jiff::{Timestamp, civil::Date, tz::TimeZone};
+use jiff::{
+    Span, Timestamp,
+    civil::{Date, DateTime},
+    tz::TimeZone,
+};
 
 use crate::v3::rest::{
     calendars::GcalConferenceSolutionType,
@@ -316,6 +320,7 @@ impl GcalEvent {
         let mut stash = Vec::new();
         let mut online_meeting = false;
         let mut stamp = String::new();
+        let mut duration = None;
 
         for item in &vevent.items {
             match item {
@@ -329,6 +334,13 @@ impl GcalEvent {
 
                     if name.eq_ignore_ascii_case("DTSTAMP") {
                         stamp = line.raw_value_str().trim().to_string();
+                    }
+
+                    if name.eq_ignore_ascii_case("DURATION")
+                        && let Some(span) = event_duration(line)
+                    {
+                        duration = Some(span);
+                        continue;
                     }
 
                     if !consume_prop(&mut event, line) {
@@ -346,6 +358,15 @@ impl GcalEvent {
 
         if event.start.is_none() {
             return Err(GcalEventIcalError::NoZonedStart);
+        }
+
+        // NOTE: RFC 5545 lets a DURATION stand for the DTEND, Google
+        // does not, so the end is computed from the start and the
+        // DURATION is dropped, a DTEND written back in its place.
+        if event.end.is_none() {
+            event.end = duration
+                .zip(event.start.as_ref())
+                .and_then(|(duration, start)| shifted(start, duration));
         }
 
         if event.end.is_none() {
@@ -492,7 +513,8 @@ pub enum GcalEventIcalError {
     Parse(IcalParseError),
     /// The VEVENT starts neither in UTC nor in a named zone.
     NoZonedStart,
-    /// The VEVENT has no DTEND, which Google requires.
+    /// The VEVENT has neither a DTEND nor a DURATION giving one, and
+    /// Google requires an end.
     NoEnd,
     /// The document holds a component Google does not model.
     NotAnEvent(String),
@@ -513,7 +535,7 @@ impl fmt::Display for GcalEventIcalError {
             Self::NoEnd => {
                 write!(
                     f,
-                    "Google needs a DTEND on every event; a DURATION alone is not enough"
+                    "Google needs an end on every event: a DTEND, or a DURATION after the DTSTART"
                 )
             }
             Self::NotAnEvent(name) => {
@@ -1026,6 +1048,53 @@ fn boundary(line: &IcalLine<'_>) -> Option<GcalEventDateTime> {
         }),
         (None, None) => None,
     }
+}
+
+/// Reads the DURATION of a VEVENT.
+///
+/// RFC 5545 3.8.2.5 gives an event a positive duration, so a negative
+/// one returns `None`, and the line stays in the stash.
+fn event_duration(line: &IcalLine<'_>) -> Option<Span> {
+    let duration = line.raw_value_str().trim().parse::<Span>().ok()?;
+    (!duration.is_negative()).then_some(duration)
+}
+
+/// The boundary a DURATION after `start` ends at.
+///
+/// The arithmetic runs on the wall time, so the end keeps the zone and
+/// the shape of the start. A date moves only by whole days, RFC 5545
+/// 3.8.2.5 allowing nothing else after a `VALUE=DATE` start.
+fn shifted(start: &GcalEventDateTime, duration: Span) -> Option<GcalEventDateTime> {
+    if let Some(date) = &start.date {
+        if duration.get_hours() != 0 || duration.get_minutes() != 0 || duration.get_seconds() != 0 {
+            return None;
+        }
+
+        let end = date.parse::<Date>().ok()?.checked_add(duration).ok()?;
+
+        return Some(GcalEventDateTime {
+            date: Some(end.to_string()),
+            ..Default::default()
+        });
+    }
+
+    let date_time = start.date_time.as_deref()?;
+    let (local, suffix) = match date_time.strip_suffix('Z') {
+        Some(local) => (local, "Z"),
+        None => (date_time, ""),
+    };
+
+    // NOTE: a day is nominal in RFC 5545 and an hour exact, and the two
+    // only part ways across a daylight-saving change. Telling them apart
+    // there needs the zone's rules, so the wall time is shifted as a
+    // whole, as io-msgraph does.
+    let end = local.parse::<DateTime>().ok()?.checked_add(duration).ok()?;
+
+    Some(GcalEventDateTime {
+        date_time: Some(format!("{}{suffix}", end.strftime("%Y-%m-%dT%H:%M:%S"))),
+        time_zone: start.time_zone.clone(),
+        ..Default::default()
+    })
 }
 
 /// Pushes a DTSTART or DTEND line for a Google boundary.
@@ -1579,6 +1648,63 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("DTSTART"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn a_duration_gives_the_end_in_the_shape_of_the_start() {
+        let utc = CALENDAR.replace("DTEND:20260814T100000Z", "DURATION:PT1H30M");
+        let event = GcalEvent::from_ical(utc.as_bytes()).unwrap();
+        let end = event.end.as_ref().unwrap();
+        assert_eq!(end.date_time.as_deref(), Some("2026-08-14T10:30:00Z"));
+
+        let zoned = CALENDAR
+            .replace(
+                "DTSTART:20260814T090000Z",
+                "DTSTART;TZID=Europe/Paris:20260814T233000",
+            )
+            .replace("DTEND:20260814T100000Z", "DURATION:PT1H");
+        let event = GcalEvent::from_ical(zoned.as_bytes()).unwrap();
+        let end = event.end.as_ref().unwrap();
+        assert_eq!(end.date_time.as_deref(), Some("2026-08-15T00:30:00"));
+        assert_eq!(end.time_zone.as_deref(), Some("Europe/Paris"));
+
+        let all_day = CALENDAR
+            .replace("DTSTART:20260814T090000Z", "DTSTART;VALUE=DATE:20260814")
+            .replace("DTEND:20260814T100000Z", "DURATION:P1W");
+        let event = GcalEvent::from_ical(all_day.as_bytes()).unwrap();
+        assert_eq!(
+            event.end.as_ref().unwrap().date.as_deref(),
+            Some("2026-08-21")
+        );
+    }
+
+    #[test]
+    fn a_duration_is_dropped_for_the_dtend_it_became() {
+        let ical = CALENDAR.replace("DTEND:20260814T100000Z", "DURATION:PT1H30M");
+        let event = GcalEvent::from_ical(ical.as_bytes()).unwrap();
+        let ical = event.to_ical();
+        assert!(ical.contains("DTEND:20260814T103000Z\r\n"), "{ical}");
+        assert!(!ical.contains("DURATION"), "{ical}");
+    }
+
+    #[test]
+    fn a_duration_that_gives_no_end_is_refused_by_name() {
+        for (start, duration) in [
+            // NOTE: an event cannot end before it starts.
+            ("DTSTART:20260814T090000Z", "DURATION:-PT1H"),
+            // NOTE: a date moves by whole days only.
+            ("DTSTART;VALUE=DATE:20260814", "DURATION:PT12H"),
+            ("DTSTART:20260814T090000Z", "DURATION:soon"),
+        ] {
+            let ical = CALENDAR
+                .replace("DTSTART:20260814T090000Z", start)
+                .replace("DTEND:20260814T100000Z", duration);
+            let err = GcalEvent::from_ical(ical.as_bytes()).unwrap_err();
+            assert!(
+                matches!(err, GcalEventIcalError::NoEnd),
+                "{start} {duration}: {err}"
+            );
+        }
     }
 
     #[test]
