@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `GcalEvent::from_ical` accepts a VEVENT giving its end as a DURATION (RFC 5545 3.8.2.5) instead of refusing it with `NoEnd`: the end is computed from the DTSTART, in its zone and its shape, and the DURATION is dropped, so the event reads back with a DTEND. A negative DURATION, or one with hours after a `VALUE=DATE` start, is still refused.
+- Bumped ical-rs to 0.7, whose `IcalParseError` `GcalEventIcalError::Parse` carries; it gains `TooDeep`, refusing a component nested deeper than 16. **Breaking.**
+- Bumped io-http to 0.6, whose `Http11SendError` `GcalSendError::Send` carries; it gains `HeadersTooLarge` and `BodyTooLarge`, refusing a response over 64 KiB of headers or 256 MiB of body. io-http now encodes base64 through base64-codec. **Breaking.**
+- Raised the minimum Rust version to 1.89.
 
 ## [0.2.0] - 2026-10-09
 
