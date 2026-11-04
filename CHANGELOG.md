@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
 ### Changed
 
 - `GcalEvent::from_ical` accepts a VEVENT giving its end as a DURATION (RFC 5545 3.8.2.5) instead of refusing it with `NoEnd`: the end is computed from the DTSTART, in its zone and its shape, and the DURATION is dropped, so the event reads back with a DTEND. A negative DURATION, or one with hours after a `VALUE=DATE` start, is still refused.
@@ -63,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.2.0..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.3.0..HEAD
+[0.3.0]: https://github.com/pimalaya/io-gcal/compare/v0.2.0..v0.3.0
 [0.2.0]: https://github.com/pimalaya/io-gcal/compare/v0.1.3..v0.2.0
 [0.1.3]: https://github.com/pimalaya/io-gcal/compare/v0.1.2..v0.1.3
 [0.1.2]: https://github.com/pimalaya/io-gcal/compare/v0.1.1..v0.1.2
