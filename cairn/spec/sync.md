@@ -1,3 +1,9 @@
+---
+cairn: spec
+capability: sync
+status: current
+---
+
 # Keeping a local copy in step
 
 The Calendar API offers two mechanisms that are often confused, and that only work together: sync tokens tell a consumer *what* changed, push channels tell it *when* to ask. This note records how they compose, since neither the crate nor the reference states it in one place.
