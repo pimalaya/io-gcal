@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GcalEvent::from_ical` gives a VEVENT with neither DTEND nor DURATION the end RFC 5545 3.6.1 implies (the start itself after a DATE-TIME start, the next day after a DATE one) instead of refusing it with `NoEnd`; Google accepts a zero-length event. `NoEnd` now means an end the document gives but Google cannot read (a floating DTEND, a negative DURATION, hours after a DATE start).
+- `GcalEvent::to_ical` writes no DTEND equal to a timed DTSTART, which RFC 5545 3.8.2.2 forbids, the event ending at its start without one; a stashed DTEND or DURATION at the VEVENT's own level no longer comes back beside the managed end.
+
 ## [0.3.0] - 2026-11-04
 
 ### Changed
