@@ -33,6 +33,16 @@
 //! what holds for any principal, and no calendar the run did not create
 //! is ever read or written, whichever token is used.
 //!
+//! The service account asks the full `calendar` scope for itself. The
+//! delegation is narrower on purpose and grants `calendar.events`,
+//! `calendar.calendars` and `calendar.calendarlist.readonly` only, so
+//! the delegated pass asks exactly those ([`DELEGATED_SCOPES`]) and
+//! leaves to the service account the steps they do not cover: the
+//! settings (`calendar.settings.readonly`), the calendar list writes
+//! (`calendar.calendarlist`), the access control list (`calendar.acls`)
+//! and the free/busy query (`calendar.freebusy`), each answered 403
+//! `insufficientPermissions` otherwise.
+//!
 //! [`account`] only reads, and is satisfied by the
 //! `calendar.readonly` scope. [`calendar`] walks the whole CRUD
 //! surface on throwaway secondary calendars and needs the full
@@ -94,9 +104,17 @@ use secrecy::ExposeSecret;
 use serde::Deserialize;
 use url::Url;
 
-/// The scope the live tests need: read and write on the calendars the
-/// principal owns.
+/// The scope the service account asks for itself: the whole API.
 const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar";
+
+/// The scopes the delegation grants: events, the calendars themselves
+/// and a read of the calendar list. One scope beyond them fails the
+/// whole token request with `unauthorized_client`.
+const DELEGATED_SCOPES: &[&str] = &[
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.calendars",
+];
 
 /// The Pimalaya Workspace user the service account acts as when
 /// `GCAL_SERVICE_ACCOUNT_SUBJECT` names none.
@@ -106,28 +124,33 @@ const DEFAULT_SUBJECT: &str = "google@pimalaya.org";
 #[test]
 #[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
 fn account() {
-    account_flow(&mut connect(Principal::ServiceAccount));
+    let principal = Principal::ServiceAccount;
+    account_flow(&mut connect(principal), principal);
 }
 
-/// Read-only pass as the delegated user.
+/// Read-only pass as the delegated user, short of the settings.
 #[test]
 #[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
 fn delegated_account() {
-    account_flow(&mut connect(Principal::Delegated));
+    let principal = Principal::Delegated;
+    account_flow(&mut connect(principal), principal);
 }
 
 /// Full CRUD pass as the service account.
 #[test]
 #[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
 fn calendar() {
-    calendar_flow(&mut connect(Principal::ServiceAccount));
+    let principal = Principal::ServiceAccount;
+    calendar_flow(&mut connect(principal), principal);
 }
 
-/// Full CRUD pass as the delegated user.
+/// CRUD pass as the delegated user, on calendars and events: the entry
+/// patch, the sharing and the free/busy query take scopes it lacks.
 #[test]
 #[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
 fn delegated_calendar() {
-    calendar_flow(&mut connect(Principal::Delegated));
+    let principal = Principal::Delegated;
+    calendar_flow(&mut connect(principal), principal);
 }
 
 /// An event inserted with an `iCalUID` keeps it, and Google invites its
@@ -197,14 +220,15 @@ fn insert_keeps_ical_uid() {
     );
 }
 
-/// Subscribes the delegated user to a calendar of the service account.
+/// Shares a calendar of the service account with the delegated user.
 ///
-/// A data owner cannot remove its own calendars from its calendar list,
-/// so inserting and deleting an entry takes a calendar someone else
-/// owns: the service account shares a throwaway one with the delegated
-/// user, who adds it to their list, rewrites the entry, then removes
-/// it. A token minted by hand is a single principal, so the test only
-/// runs on a service account key.
+/// Subscribing takes a calendar someone else owns and a write on the
+/// calendar list, which the delegation does not grant (no
+/// `calendar.calendarlist`). So the delegated user only reads the
+/// shared calendar and its events, and the service account writes the
+/// entry of its own calendar instead, whose removal a data owner is
+/// refused. A token minted by hand is a single principal, so the test
+/// only runs on a service account key.
 #[test]
 #[ignore = "requires a service account key and --ignored"]
 fn subscription() {
@@ -214,8 +238,9 @@ fn subscription() {
     }
 
     let mut owner = connect(Principal::ServiceAccount);
-    let mut subscriber = connect(Principal::Delegated);
-    let id = calendar_create(&mut owner, &format!("io-gcal-test-{}", unix_millis()));
+    let mut reader = connect(Principal::Delegated);
+    let summary = format!("io-gcal-test-{}", unix_millis());
+    let id = calendar_create(&mut owner, &summary);
 
     with_cleanup(
         &mut owner,
@@ -232,7 +257,28 @@ fn subscription() {
                 owner.acl_rule_insert(&id, &rule, Some(false))
             });
 
-            calendar_list(&mut subscriber, &id);
+            let event = GcalEvent {
+                summary: Some(String::from("io-gcal test shared")),
+                start: Some(timed("2030-01-09T10:00:00+01:00")),
+                end: Some(timed("2030-01-09T11:00:00+01:00")),
+                ..Default::default()
+            };
+            let event = retry("event insert", || {
+                owner.event_insert(&id, &event, &Default::default())
+            })
+            .response;
+
+            let shared = retry("shared calendar get", || reader.calendar_get(&id)).response;
+            assert_eq!(shared.summary.as_deref(), Some(summary.as_str()));
+
+            let listed = retry("shared events list", || {
+                reader.events_list(&id, &Default::default())
+            })
+            .response;
+            let ids: Vec<_> = listed.items.iter().map(|e| e.id.as_deref()).collect();
+            assert_eq!(ids, [event.id.as_deref()], "the share shows the event");
+
+            calendar_list(owner, &id);
         },
         |owner| {
             if let Err(err) = owner.calendar_delete(&id) {
@@ -482,7 +528,7 @@ fn ical_instances() {
 
 /// Reads the account-wide resources: the colour palettes, the user
 /// settings and the calendar list.
-fn account_flow(client: &mut GcalClientStd) {
+fn account_flow(client: &mut GcalClientStd, principal: Principal) {
     let colors = retry("colors get", || client.colors_get()).response;
     assert!(!colors.event.is_empty(), "the event palette is never empty");
     assert!(
@@ -495,6 +541,27 @@ fn account_flow(client: &mut GcalClientStd) {
     // asserted here is the shape of whatever comes back rather than its
     // presence. That a listing can be walked and an entry fetched by id
     // is covered against a calendar the run owns, in [`calendar`].
+    match principal {
+        Principal::ServiceAccount => settings(client),
+        // NOTE: the delegation grants no `calendar.settings.readonly`.
+        Principal::Delegated => (),
+    }
+
+    let calendars = retry("calendar list list", || {
+        client.calendar_list_list(&Default::default())
+    })
+    .response;
+    assert!(
+        calendars
+            .items
+            .iter()
+            .all(|entry| entry.id.is_some() && entry.access_role.is_some()),
+        "every calendar list entry carries an id and an access role"
+    );
+}
+
+/// Lists the user settings and fetches the first one by id.
+fn settings(client: &mut GcalClientStd) {
     let settings = retry("settings list", || {
         client.settings_list(&Default::default())
     })
@@ -512,30 +579,18 @@ fn account_flow(client: &mut GcalClientStd) {
         let fetched = client.setting_get(id).expect("setting get").response;
         assert_eq!(fetched.value, listed.value, "setting get value mismatch");
     }
-
-    let calendars = retry("calendar list list", || {
-        client.calendar_list_list(&Default::default())
-    })
-    .response;
-    assert!(
-        calendars
-            .items
-            .iter()
-            .all(|entry| entry.id.is_some() && entry.access_role.is_some()),
-        "every calendar list entry carries an id and an access role"
-    );
 }
 
 /// Walks the CRUD surface on two throwaway secondary calendars: the
 /// main one, and the destination of an event move.
-fn calendar_flow(client: &mut GcalClientStd) {
+fn calendar_flow(client: &mut GcalClientStd, principal: Principal) {
     let summary = format!("io-gcal-test-{}", unix_millis());
     let id = calendar_create(client, &summary);
 
     with_cleanup(
         client,
         |client| {
-            calendar_metadata(client, &id, &summary);
+            calendar_metadata(client, &id, &summary, principal);
             events(client, &id, &summary);
 
             let other = calendar_create(client, &format!("{summary}-other"));
@@ -552,8 +607,15 @@ fn calendar_flow(client: &mut GcalClientStd) {
                 },
             );
 
-            sharing(client, &id);
-            free_busy(client, &id);
+            match principal {
+                Principal::ServiceAccount => {
+                    sharing(client, &id);
+                    free_busy(client, &id);
+                }
+                // NOTE: the delegation grants neither `calendar.acls`
+                // nor `calendar.freebusy`.
+                Principal::Delegated => (),
+            }
         },
         |client| {
             if let Err(err) = client.calendar_delete(&id) {
@@ -579,7 +641,7 @@ fn calendar_create(client: &mut GcalClientStd, summary: &str) -> String {
 
 /// Reads back the calendar, patches then replaces it, and checks the
 /// entry the creation added to the calendar list.
-fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
+fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str, principal: Principal) {
     let fetched = retry("calendar get", || client.calendar_get(id)).response;
     assert_eq!(fetched.summary.as_deref(), Some(summary));
     assert_eq!(fetched.time_zone.as_deref(), Some("Europe/Paris"));
@@ -626,6 +688,11 @@ fn calendar_metadata(client: &mut GcalClientStd, id: &str, summary: &str) {
     })
     .response;
     assert_eq!(entry.access_role, Some(GcalAccessRole::Owner));
+
+    // NOTE: the delegation grants no `calendar.calendarlist`.
+    if let Principal::Delegated = principal {
+        return;
+    }
 
     let renamed = retry("calendar list entry patch", || {
         client.calendar_list_entry_patch(
@@ -839,8 +906,8 @@ fn event_move(client: &mut GcalClientStd, from: &str, to: &str) {
     assert_eq!(fetched.summary.as_deref(), Some("io-gcal test move"));
 }
 
-/// Adds a calendar shared with the principal to its calendar list,
-/// replaces the entry, then removes it.
+/// Adds a calendar the principal owns to its calendar list, where it
+/// already sits, replaces the entry, then fails to remove it.
 fn calendar_list(client: &mut GcalClientStd, calendar_id: &str) {
     let inserted = retry("calendar list entry insert", || {
         client.calendar_list_entry_insert(
@@ -853,7 +920,7 @@ fn calendar_list(client: &mut GcalClientStd, calendar_id: &str) {
     })
     .response;
     assert_eq!(inserted.id.as_deref(), Some(calendar_id));
-    assert_eq!(inserted.access_role, Some(GcalAccessRole::Reader));
+    assert_eq!(inserted.access_role, Some(GcalAccessRole::Owner));
 
     let updated = retry("calendar list entry update", || {
         client.calendar_list_entry_update(
@@ -871,9 +938,22 @@ fn calendar_list(client: &mut GcalClientStd, calendar_id: &str) {
         Some("io-gcal replaced")
     );
 
-    retry("calendar list entry delete", || {
-        client.calendar_list_entry_delete(calendar_id)
+    let refused = retry("calendar list entry delete", || {
+        match client.calendar_list_entry_delete(calendar_id) {
+            Ok(_) => panic!("a data owner removed its own calendar from its list"),
+            Err(err) if rate_limited(&err) => Err(err),
+            Err(err) => Ok(err),
+        }
     });
+    let GcalClientStdError::Send(refused) = refused else {
+        panic!("calendar list entry delete: {refused:?}");
+    };
+    assert!(
+        refused
+            .api()
+            .is_some_and(|api| api.has_reason("cannotUnsubscribeFromOwnedCalendar")),
+        "got: {refused:?}"
+    );
 }
 
 /// Reads the access control list, adds a rule, rewrites it, then
@@ -1045,6 +1125,7 @@ fn assert_same_projection(
 }
 
 /// Whom the run acts as.
+#[derive(Clone, Copy)]
 enum Principal {
     /// The service account itself, on the calendars it owns.
     ServiceAccount,
@@ -1080,8 +1161,8 @@ fn token(principal: Principal) -> String {
     };
 
     match principal {
-        Principal::ServiceAccount => mint_token(&key, None),
-        Principal::Delegated => mint_token(&key, Some(subject())),
+        Principal::ServiceAccount => mint_token(&key, None, &[CALENDAR_SCOPE]),
+        Principal::Delegated => mint_token(&key, Some(subject()), DELEGATED_SCOPES),
     }
 }
 
@@ -1134,7 +1215,7 @@ fn default_token_uri() -> String {
 /// keep alive. The scopes ride in the claims, which is Google's
 /// deviation from the RFC, and io-oauth models it: the token endpoint
 /// reads them from there rather than from the request body.
-fn mint_token(key: &str, subject: Option<String>) -> String {
+fn mint_token(key: &str, subject: Option<String>, scopes: &[&'static str]) -> String {
     let key: ServiceAccountKey =
         serde_json::from_str(key).expect("the service account key is valid JSON");
 
@@ -1150,7 +1231,7 @@ fn mint_token(key: &str, subject: Option<String>) -> String {
     let claims = Oauth20JwtBearerClaims {
         iss: key.client_email.as_str().into(),
         sub: subject.map(Cow::from),
-        scope: [Cow::from(CALENDAR_SCOPE)].into_iter().collect(),
+        scope: scopes.iter().copied().map(Cow::from).collect(),
         ..Default::default()
     };
 
