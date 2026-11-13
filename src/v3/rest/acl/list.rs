@@ -2,12 +2,9 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/acl/list>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
 use serde::Serialize;
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -15,7 +12,7 @@ use crate::{
     v3::{
         query::{append_query_pairs, is_false},
         rest::acl::GcalAcl,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -55,7 +52,7 @@ impl GcalAclList {
         trace!("calendar_id: {calendar_id:?}");
         trace!("params: {params:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/acl"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "acl"])?;
         append_query_pairs(&mut url, params);
 
         let send = GcalSend::get(auth, url);

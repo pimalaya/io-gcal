@@ -2,12 +2,9 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events/insert>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
 use serde::Serialize;
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -15,7 +12,7 @@ use crate::{
     v3::{
         query::{append_query_pairs, is_false},
         rest::events::{GcalEvent, GcalEventDateTime, GcalSendUpdates},
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -83,8 +80,7 @@ impl GcalEventInsert {
             return Err(err);
         }
 
-        let mut url =
-            Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/events"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "events"])?;
         append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, event)?;

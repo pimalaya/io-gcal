@@ -2,18 +2,15 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/settings/get>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::settings::GcalSetting,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -30,7 +27,7 @@ impl GcalSettingGet {
         debug!("prepare calendar setting retrieval");
         trace!("setting: {setting:?}");
 
-        let url = Url::parse(GCAL_API_BASE)?.join(&format!("users/me/settings/{setting}"))?;
+        let url = gcal_api_url(&["users", "me", "settings", setting])?;
         let send = GcalSend::get(auth, url);
 
         Ok(Self { send })

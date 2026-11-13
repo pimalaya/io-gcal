@@ -4,14 +4,13 @@
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::channels::GcalChannel,
-        send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -27,7 +26,7 @@ impl GcalChannelStop {
         debug!("prepare calendar channel stop");
         trace!("channel: {channel:?}");
 
-        let url = Url::parse(GCAL_API_BASE)?.join("channels/stop")?;
+        let url = gcal_api_url(&["channels", "stop"])?;
         let send = GcalSend::post_json(auth, url, channel)?;
 
         Ok(Self { send })

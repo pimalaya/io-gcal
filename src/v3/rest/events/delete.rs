@@ -2,11 +2,8 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events/delete>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -14,7 +11,7 @@ use crate::{
     v3::{
         query::to_field_pairs,
         rest::events::GcalSendUpdates,
-        send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -43,15 +40,14 @@ impl GcalEventDelete {
         trace!("event_id: {event_id:?}");
         trace!("send_updates: {send_updates:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?
-            .join(&format!("calendars/{calendar_id}/events/{event_id}"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "events", event_id])?;
 
         if let Some(send_updates) = send_updates {
             url.query_pairs_mut()
                 .extend_pairs(to_field_pairs("sendUpdates", &send_updates));
         }
 
-        let send = GcalSend::delete_if_match(auth, url, if_match);
+        let send = GcalSend::delete_if_match(auth, url, if_match)?;
 
         Ok(Self { send })
     }

@@ -7,13 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `gcal_api_url`, building a Calendar API URL from its path segments, each percent-encoded on its own.
+- Added `GcalEventIcalError::StashFull`, returned by `GcalEvent::from_ical` when a document holds more unmanaged lines than Google stores beside an event (requires `ical` feature). **Breaking** for an exhaustive match.
+
+  It carries the event, stashing every line it has room for, and the lines left out.
+
 ### Changed
 
 - Changed `GcalEvent::to_ical` and `to_ical_series` to fold every line they write at 75 octets, a recurrence line and a stashed line included (requires `ical` feature).
 
   The VTIMEZONE of a series come in name order, where those an exception alone names used to follow the master's.
+- Changed `GcalSend::with_guard` and `GcalSend::delete_if_match` to return a `Result`, refusing an entity tag that holds a control character. **Breaking.**
+- Changed every coroutine to percent-encode the ids of its request path, so an id is passed as the API returns it. **Breaking** for a caller that encoded an id itself.
+
+  An empty, `.` or `..` id, or one holding a tab or a line break, is refused with `GcalSendError::InvalidRequest`.
 
 ### Fixed
+
+- Fixed an id holding `#`, `?` or `/` naming another resource than its own, the events of a subscribed calendar such as `en.usa#holiday@group.v.calendar.google.com` among them.
+- Fixed `GcalEvent::from_ical` leaving an unmanaged line wider than 1024 octets out of the stash without a word (requires `ical` feature).
+
+  A line of any width now runs over as many extended properties as it takes.
+- Fixed `GcalEvent::from_ical` overflowing on a VALARM whose trigger counts more seconds than fit, which panicked a build with overflow checks (requires `ical` feature).
+
+  Such an alarm stays in the stash.
 
 - Fixed `GcalEvent::from_ical` stashing a folded line with its folds, which `to_ical` gave back with a stray CR in its value at each fold (requires `ical` feature).
 

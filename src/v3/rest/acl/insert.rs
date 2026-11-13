@@ -2,18 +2,17 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/acl/insert>
 
-use alloc::{format, string::ToString};
+use alloc::string::ToString;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::acl::GcalAclRule,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -38,7 +37,7 @@ impl GcalAclRuleInsert {
         trace!("calendar_id: {calendar_id:?}");
         trace!("rule: {rule:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/acl"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "acl"])?;
 
         if let Some(send_notifications) = send_notifications {
             url.query_pairs_mut()

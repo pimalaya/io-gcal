@@ -2,11 +2,8 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events/watch>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -14,7 +11,7 @@ use crate::{
     v3::{
         query::append_query_pairs,
         rest::{channels::GcalChannel, events::list::GcalEventsListParams},
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -43,8 +40,7 @@ impl GcalEventsWatch {
         trace!("channel: {channel:?}");
         trace!("params: {params:?}");
 
-        let mut url =
-            Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/events/watch"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "events", "watch"])?;
         append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, channel)?;

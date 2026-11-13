@@ -8,6 +8,7 @@
 use core::marker::PhantomData;
 
 use alloc::{
+    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -134,7 +135,11 @@ impl<T: DeserializeOwned> GcalSend<T> {
     /// Builds a DELETE request guarded by an entity tag.
     ///
     /// See [`Self::with_guard`] for what the guard does.
-    pub fn delete_if_match(auth: &HttpAuthBearer, url: Url, if_match: Option<&str>) -> Self {
+    pub fn delete_if_match(
+        auth: &HttpAuthBearer,
+        url: Url,
+        if_match: Option<&str>,
+    ) -> Result<Self, GcalSendError> {
         Self::with_guard(auth, "DELETE", url, None, Vec::new(), if_match)
     }
 
@@ -187,14 +192,7 @@ impl<T: DeserializeOwned> GcalSend<T> {
         if_match: Option<&str>,
     ) -> Result<Self, GcalSendError> {
         let body = serde_json::to_vec(body).map_err(GcalSendError::SerializeRequest)?;
-        Ok(Self::with_guard(
-            auth,
-            "PUT",
-            url,
-            Some("application/json"),
-            body,
-            if_match,
-        ))
+        Self::with_guard(auth, "PUT", url, Some("application/json"), body, if_match)
     }
 
     /// Builds a PATCH request with the given value as JSON body.
@@ -224,14 +222,7 @@ impl<T: DeserializeOwned> GcalSend<T> {
         if_match: Option<&str>,
     ) -> Result<Self, GcalSendError> {
         let body = serde_json::to_vec(body).map_err(GcalSendError::SerializeRequest)?;
-        Ok(Self::with_guard(
-            auth,
-            "PATCH",
-            url,
-            Some("application/json"),
-            body,
-            if_match,
-        ))
+        Self::with_guard(auth, "PATCH", url, Some("application/json"), body, if_match)
     }
 
     /// Builds a request with an arbitrary method, content type and body.
@@ -242,7 +233,7 @@ impl<T: DeserializeOwned> GcalSend<T> {
         content_type: Option<&str>,
         body: Vec<u8>,
     ) -> Self {
-        Self::with_guard(auth, method, url, content_type, body, None)
+        Self::build(auth, method, url, content_type, body, None)
     }
 
     /// Builds a request with an arbitrary method, content type, body
@@ -252,7 +243,26 @@ impl<T: DeserializeOwned> GcalSend<T> {
     /// returned, so the write only lands while the resource has not
     /// moved underneath it; a stale tag comes back as HTTP 412. An
     /// absent guard overwrites unconditionally.
+    ///
+    /// A guard holding a control character is refused: it would end
+    /// the header line it rides on.
     pub fn with_guard(
+        auth: &HttpAuthBearer,
+        method: &str,
+        url: Url,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+        if_match: Option<&str>,
+    ) -> Result<Self, GcalSendError> {
+        if if_match.is_some_and(|tag| tag.contains(char::is_control)) {
+            let reason = "Entity tag holds a control character";
+            return Err(GcalSendError::InvalidRequest(reason.into()));
+        }
+
+        Ok(Self::build(auth, method, url, content_type, body, if_match))
+    }
+
+    fn build(
         auth: &HttpAuthBearer,
         method: &str,
         url: Url,
@@ -360,6 +370,30 @@ struct ErrorEnvelope {
 struct ErrorBody {
     code: Option<u16>,
     message: Option<String>,
+}
+
+/// Builds the Calendar API URL of a path from its segments.
+///
+/// Each segment is percent-encoded on its own, so an id holding `/`,
+/// `?` or `#` names no other resource. A segment the URL would drop or
+/// rewrite is refused: an empty one, `.`, `..`, or one holding a tab
+/// or a line break.
+pub fn gcal_api_url(segments: &[&str]) -> Result<Url, GcalSendError> {
+    let mut url = Url::parse(GCAL_API_BASE)?;
+
+    for segment in segments {
+        if matches!(*segment, "" | "." | "..") || segment.contains(['\t', '\n', '\r']) {
+            let reason = format!("Path segment {segment:?} names no resource");
+            return Err(GcalSendError::InvalidRequest(reason));
+        }
+    }
+
+    // NOTE: the base is hierarchical, so its path is always mutable.
+    if let Ok(mut path) = url.path_segments_mut() {
+        path.pop_if_empty().extend(segments);
+    }
+
+    Ok(url)
 }
 
 /// Parses Calendar's JSON error envelope, falling back to the raw body;

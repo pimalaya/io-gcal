@@ -3,18 +3,17 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/calendarList/update>
 
-use alloc::{format, string::ToString};
+use alloc::string::ToString;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::calendar_list::GcalCalendarListEntry,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -41,8 +40,7 @@ impl GcalCalendarListEntryUpdate {
         trace!("calendar_id: {calendar_id:?}");
         trace!("entry: {entry:?}");
 
-        let mut url =
-            Url::parse(GCAL_API_BASE)?.join(&format!("users/me/calendarList/{calendar_id}"))?;
+        let mut url = gcal_api_url(&["users", "me", "calendarList", calendar_id])?;
 
         if let Some(color_rgb_format) = color_rgb_format {
             url.query_pairs_mut()

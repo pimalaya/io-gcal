@@ -4,14 +4,13 @@
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::colors::GcalColors,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -26,7 +25,7 @@ impl GcalColorsGet {
     pub fn new(auth: &HttpAuthBearer) -> Result<Self, GcalSendError> {
         debug!("prepare calendar colors retrieval");
 
-        let url = Url::parse(GCAL_API_BASE)?.join("colors")?;
+        let url = gcal_api_url(&["colors"])?;
         let send = GcalSend::get(auth, url);
 
         Ok(Self { send })

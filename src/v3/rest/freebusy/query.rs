@@ -5,14 +5,13 @@
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::freebusy::{GcalFreeBusyRequest, GcalFreeBusyResponse},
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -38,7 +37,7 @@ impl GcalFreeBusyQuery {
             return Err(err);
         }
 
-        let url = Url::parse(GCAL_API_BASE)?.join("freeBusy")?;
+        let url = gcal_api_url(&["freeBusy"])?;
         let send = GcalSend::post_json(auth, url, request)?;
 
         Ok(Self { send })

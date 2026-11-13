@@ -4,7 +4,6 @@
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -12,7 +11,7 @@ use crate::{
     v3::{
         query::append_query_pairs,
         rest::{calendar_list::list::GcalCalendarListListParams, channels::GcalChannel},
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -37,7 +36,7 @@ impl GcalCalendarListWatch {
         trace!("channel: {channel:?}");
         trace!("params: {params:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?.join("users/me/calendarList/watch")?;
+        let mut url = gcal_api_url(&["users", "me", "calendarList", "watch"])?;
         append_query_pairs(&mut url, params);
 
         let send = GcalSend::post_json(auth, url, channel)?;

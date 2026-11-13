@@ -6,7 +6,7 @@ status: current
 
 # Events as iCalendar
 
-The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage and about how the document is built; the rest of the projection is not written down yet.
+The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built and about which alarms become reminders; the rest of the projection is not written down yet.
 
 ### Requirement: Every event read has an end
 `GcalEvent::from_ical` SHALL give Google an end for every VEVENT it accepts: its DTEND, else its DATE-TIME or DATE start shifted by its DURATION, else the end RFC 5545 3.6.1 implies, the start itself after a DATE-TIME start and the next day after a DATE one. The end SHALL keep the start's zone and shape. It SHALL refuse with `NoEnd` only an end the document gives and Google cannot read: a floating DTEND, a negative DURATION, a DURATION with a time part after a DATE start.
@@ -30,12 +30,25 @@ The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) an
 - THEN the VEVENT holds neither DTEND nor DURATION
 
 ### Requirement: The stash holds logical lines
-`GcalEvent::from_ical` SHALL stash a property it does not manage as its logical line: its name, its parameters and its raw value, with no fold, no soft break, no line ending and no CR, one line per line feed of the stash. It SHALL stash a component it does not manage as its logical lines, from its BEGIN to its END. A recurrence line (RRULE, EXRULE, RDATE, EXDATE) SHALL reach `recurrence` as its logical line too. A logical line longer than 1024 octets SHALL NOT be stashed, a line of a stashed component included.
+`GcalEvent::from_ical` SHALL stash a property it does not manage as its logical line: its name, its parameters and its raw value, with no fold, no soft break, no line ending and no CR, one line per line feed of the stash. It SHALL stash a component it does not manage as its logical lines, from its BEGIN to its END. A recurrence line (RRULE, EXRULE, RDATE, EXDATE) SHALL reach `recurrence` as its logical line too. A line SHALL be stashed whatever its width: the stash is cut into extended properties of at most 1024 octets between any two characters, so a line wider than one runs over the next ones and reads back whole.
 
 #### Scenario: A folded line
 - GIVEN a VEVENT whose `URL` runs 144 octets, folded after the seventieth
 - WHEN it is read, then written back
 - THEN the stash holds the 144 octets on one line, and the VEVENT holds the same URL, folded at 75 octets, with no CR in its value
+
+#### Scenario: A line wider than an extended property
+- GIVEN a VEVENT holding an unmanaged property of 3,000 octets, and a component it does not manage holding another
+- WHEN it is read, then written back
+- THEN no extended property is wider than 1024 octets, and both lines are in the document, whole
+
+### Requirement: A full stash names what it leaves out
+The two stashes of an event SHALL hold at most 30,000 octets of lines together, the line feed after each line counted, which keeps them under the 32 kB the API documents for the private extended properties of an event. A unit, one property line or one component from its BEGIN to its END, SHALL be stashed whole or not at all, the units of the VEVENT taken first, in document order, a unit that does not fit being skipped and the ones after it still tried. When a unit is left out, `GcalEvent::from_ical` SHALL return `GcalEventIcalError::StashFull`, carrying the event with every unit that fits and the units left out as their logical lines, and its message SHALL name them. It SHALL never leave a line out without saying so.
+
+#### Scenario: More lines than the budget
+- GIVEN a VEVENT holding 40 unmanaged properties of about 1,000 octets, then a component of 2,000 octets, then a short property
+- WHEN it is read
+- THEN the error carries the event stashing the first 29 properties and the short one, and names the 11 others and the component as left out
 
 ### Requirement: A stash stored folded reads back whole
 `GcalEvent::to_ical` SHALL read a stash stored in the folded shape of its source as the lines it folds: every CR SHALL be dropped, a piece opening on a space or a tab SHALL continue the piece before it, and an empty piece SHALL be skipped.
@@ -55,3 +68,6 @@ The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) an
 
 ### Requirement: Stored lines stay balanced
 A stored line that is no content line SHALL be left out of the document. Among the stashed lines of a component, an END closing no BEGIN SHALL be left out, and a BEGIN left open SHALL be closed.
+
+### Requirement: An alarm Google cannot hold stays in the stash
+`GcalEvent::from_ical` SHALL read a VALARM as a reminder override only when its action is DISPLAY or EMAIL and its trigger is a negative duration of whole minutes, four weeks at most. Any other alarm SHALL be stashed whole, one whose trigger is too large to count in seconds included.

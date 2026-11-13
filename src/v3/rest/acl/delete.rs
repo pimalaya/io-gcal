@@ -2,16 +2,13 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/acl/delete>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
-    v3::send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
+    v3::send::{GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
 };
 
 /// I/O-free coroutine deleting an access control rule by id
@@ -32,8 +29,7 @@ impl GcalAclRuleDelete {
         trace!("calendar_id: {calendar_id:?}");
         trace!("rule_id: {rule_id:?}");
 
-        let url =
-            Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/acl/{rule_id}"))?;
+        let url = gcal_api_url(&["calendars", calendar_id, "acl", rule_id])?;
         let send = GcalSend::delete(auth, url);
 
         Ok(Self { send })

@@ -3,16 +3,15 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/calendars/transferOwnership>
 
-use alloc::{format, string::ToString};
+use alloc::string::ToString;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
-    v3::send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
+    v3::send::{GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
 };
 
 /// I/O-free coroutine handing the data ownership of a calendar to
@@ -40,8 +39,7 @@ impl GcalCalendarTransferOwnership {
         trace!("new_data_owner: {new_data_owner:?}");
         trace!("use_admin_access: {use_admin_access:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?
-            .join(&format!("calendars/{calendar_id}/transferOwnership"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "transferOwnership"])?;
 
         url.query_pairs_mut()
             .append_pair("newDataOwner", new_data_owner)

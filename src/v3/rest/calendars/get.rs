@@ -2,18 +2,15 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/calendars/get>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::calendars::GcalCalendar,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -28,7 +25,7 @@ impl GcalCalendarGet {
         debug!("prepare calendar retrieval");
         trace!("calendar_id: {calendar_id:?}");
 
-        let url = Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}"))?;
+        let url = gcal_api_url(&["calendars", calendar_id])?;
         let send = GcalSend::get(auth, url);
 
         Ok(Self { send })

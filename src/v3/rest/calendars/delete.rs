@@ -2,16 +2,13 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/calendars/delete>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
-    v3::send::{GCAL_API_BASE, GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput},
+    v3::send::{GcalNoResponse, GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
 };
 
 /// I/O-free coroutine deleting a secondary calendar
@@ -29,7 +26,7 @@ impl GcalCalendarDelete {
         debug!("prepare calendar deletion");
         trace!("calendar_id: {calendar_id:?}");
 
-        let url = Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}"))?;
+        let url = gcal_api_url(&["calendars", calendar_id])?;
         let send = GcalSend::delete(auth, url);
 
         Ok(Self { send })

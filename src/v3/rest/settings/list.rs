@@ -5,7 +5,6 @@
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
 use serde::Serialize;
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -13,7 +12,7 @@ use crate::{
     v3::{
         query::append_query_pairs,
         rest::settings::GcalSettings,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -48,7 +47,7 @@ impl GcalSettingsList {
         debug!("prepare calendar settings listing");
         trace!("params: {params:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?.join("users/me/settings")?;
+        let mut url = gcal_api_url(&["users", "me", "settings"])?;
         append_query_pairs(&mut url, params);
 
         let send = GcalSend::get(auth, url);

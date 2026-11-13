@@ -539,6 +539,30 @@ fn leaves_an_unguarded_write_unconditional() {
 }
 
 #[test]
+fn refuses_an_entity_tag_holding_a_control_character() {
+    for tag in [
+        "\"tag-1\"\r\nX-Injected: 1",
+        "tag\n",
+        "tag\r",
+        "ta\0g",
+        "ta\u{7f}g",
+    ] {
+        let params = Default::default();
+        let update = GcalEventUpdate::new(&auth(), "primary", "ev1", &event(), &params, Some(tag));
+        let params = Default::default();
+        let patch = GcalEventPatch::new(&auth(), "primary", "ev1", &event(), &params, Some(tag));
+        let delete = GcalEventDelete::new(&auth(), "primary", "ev1", None, Some(tag));
+
+        for err in [update.err(), patch.err(), delete.err()] {
+            assert!(
+                matches!(err, Some(GcalSendError::InvalidRequest(ref message)) if message.contains("tag")),
+                "{tag:?}: {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reports_a_stale_entity_tag() {
     let body = r#"{"error":{"code":412,"message":"Precondition Failed"}}"#;
     let mut coroutine = GcalEventUpdate::new(

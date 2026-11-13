@@ -2,11 +2,8 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events/quickAdd>
 
-use alloc::format;
-
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
@@ -14,7 +11,7 @@ use crate::{
     v3::{
         query::to_field_pairs,
         rest::events::{GcalEvent, GcalSendUpdates},
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -44,8 +41,7 @@ impl GcalEventQuickAdd {
             return Err(err);
         }
 
-        let mut url =
-            Url::parse(GCAL_API_BASE)?.join(&format!("calendars/{calendar_id}/events/quickAdd"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "events", "quickAdd"])?;
 
         url.query_pairs_mut().append_pair("text", text);
 

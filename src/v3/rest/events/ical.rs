@@ -87,10 +87,13 @@ use crate::v3::rest::{
 const PRODID: &str = "-//Pimalaya//calendula//EN";
 
 /// Widest value Google accepts in an extended property, hence a chunk.
-///
-/// A logical line longer than this stays in the local document, never
-/// sent, rather than risking the whole write.
 const MAX_STASH_CHUNK: usize = 1024;
+
+/// Most octets of lines the two stashes of an event hold together.
+///
+/// The API documents 32 kB of private extended properties per event,
+/// keys included, and a write past them is refused whole.
+const MAX_STASH_TOTAL: usize = 30_000;
 
 /// Key prefix of the chunks stashing the VEVENT remainder.
 ///
@@ -356,6 +359,10 @@ impl GcalEvent {
     /// Only the managed fields and the stash are filled: a provider-only
     /// field has no iCalendar source, and [`merge`](Self::merge) carries it over from
     /// the server copy instead.
+    ///
+    /// A document holding more unmanaged lines than Google stores beside
+    /// an event comes back as [`GcalEventIcalError::StashFull`], which
+    /// carries the event and the lines it goes without.
     pub fn from_ical(contents: &[u8]) -> Result<Self, GcalEventIcalError> {
         let calendar = IcalCst::parse(contents).map_err(GcalEventIcalError::Parse)?;
         let (vevent, calendar) = take_vevent(&calendar)?;
@@ -394,15 +401,17 @@ impl GcalEvent {
                     }
 
                     if !consume_prop(&mut event, line) {
-                        stash.push(raw_line(line));
+                        stash.push(vec![raw_line(line)]);
                     }
                 }
                 IcalItem::Component(child) if is_named(child, "VALARM") => match reminder(child) {
                     Some(reminder) => reminders.push(reminder),
-                    None => stash.extend(raw_component(child)),
+                    None => stash.push(raw_component(child)),
                 },
-                IcalItem::Component(child) => stash.extend(raw_component(child)),
-                IcalItem::Opaque(bytes) => stash.push(String::from_utf8_lossy(bytes).into_owned()),
+                IcalItem::Component(child) => stash.push(raw_component(child)),
+                IcalItem::Opaque(bytes) => {
+                    stash.push(vec![String::from_utf8_lossy(bytes).into_owned()]);
+                }
             }
         }
 
@@ -469,14 +478,25 @@ impl GcalEvent {
         let calendar_stash = calendar.map(calendar_remainder).unwrap_or_default();
 
         let mut private = BTreeMap::new();
-        chunk_into(&mut private, EVENT_STASH_PREFIX, &stash);
-        chunk_into(&mut private, CALENDAR_STASH_PREFIX, &calendar_stash);
+        let mut room = MAX_STASH_TOTAL;
+        let mut left_out = chunk_into(&mut private, EVENT_STASH_PREFIX, stash, &mut room);
+        left_out.extend(chunk_into(
+            &mut private,
+            CALENDAR_STASH_PREFIX,
+            calendar_stash,
+            &mut room,
+        ));
 
         if !private.is_empty() {
             event.extended_properties = Some(GcalEventExtendedProperties {
                 private,
                 shared: BTreeMap::new(),
             });
+        }
+
+        if !left_out.is_empty() {
+            let event = Box::new(event);
+            return Err(GcalEventIcalError::StashFull { event, left_out });
         }
 
         Ok(event)
@@ -583,6 +603,13 @@ pub enum GcalEventIcalError {
     NotAnEvent(String),
     /// The document holds no VEVENT.
     NoEvent,
+    /// The document holds more unmanaged lines than Google stores.
+    StashFull {
+        /// The event, stashing every line it has room for.
+        event: Box<GcalEvent>,
+        /// The logical lines it goes without, a component whole.
+        left_out: Vec<Vec<String>>,
+    },
 }
 
 impl fmt::Display for GcalEventIcalError {
@@ -605,6 +632,27 @@ impl fmt::Display for GcalEventIcalError {
                 write!(f, "Google models no {name}: its calendars hold events only")
             }
             Self::NoEvent => write!(f, "The iCalendar contents carry no VEVENT"),
+            Self::StashFull { left_out, .. } => {
+                write!(
+                    f,
+                    "Google stores {MAX_STASH_TOTAL} octets of the lines it does not model per event, so this one goes without"
+                )?;
+
+                for (index, unit) in left_out.iter().enumerate() {
+                    let line = unit.first().map(String::as_str).unwrap_or_default();
+                    let (head, value) = line.split_once(':').unwrap_or((line, ""));
+                    let name = head.split(';').next().unwrap_or(head);
+                    let separator = if index == 0 { " " } else { ", " };
+
+                    if name.eq_ignore_ascii_case("BEGIN") {
+                        write!(f, "{separator}{value}")?;
+                    } else {
+                        write!(f, "{separator}{name}")?;
+                    }
+                }
+
+                Ok(())
+            }
         }
     }
 }
@@ -709,19 +757,21 @@ fn take_vevent<'a>(
 /// would spend the extended-property budget on bytes the projection
 /// mints for free. One it does not know is kept verbatim, since nothing
 /// else could rebuild it.
-fn calendar_remainder(calendar: &IcalCst<'_>) -> Vec<String> {
+fn calendar_remainder(calendar: &IcalCst<'_>) -> Vec<Vec<String>> {
     let mut remainder = Vec::new();
 
     for item in &calendar.items {
         match item {
             IcalItem::Prop(line) if !is_calendar_owned(line.name.get()) => {
-                remainder.push(raw_line(line))
+                remainder.push(vec![raw_line(line)])
             }
             IcalItem::Prop(_) => {}
             IcalItem::Component(child) if is_named(child, "VEVENT") => {}
             IcalItem::Component(child) if is_known_zone(child) => {}
-            IcalItem::Component(child) => remainder.extend(raw_component(child)),
-            IcalItem::Opaque(bytes) => remainder.push(String::from_utf8_lossy(bytes).into_owned()),
+            IcalItem::Component(child) => remainder.push(raw_component(child)),
+            IcalItem::Opaque(bytes) => {
+                remainder.push(vec![String::from_utf8_lossy(bytes).into_owned()]);
+            }
         }
     }
 
@@ -966,14 +1016,15 @@ fn lead_minutes(duration: &str) -> Option<u32> {
             let value: u64 = digits.parse().ok()?;
             digits.clear();
 
-            seconds += value
-                * match character {
-                    'W' => 7 * 24 * 3600,
-                    'D' => 24 * 3600,
-                    'H' => 3600,
-                    'M' => 60,
-                    _ => 1,
-                };
+            let unit = match character {
+                'W' => 7 * 24 * 3600,
+                'D' => 24 * 3600,
+                'H' => 3600,
+                'M' => 60,
+                _ => 1,
+            };
+
+            seconds = value.checked_mul(unit)?.checked_add(seconds)?;
         }
     }
 
@@ -1409,17 +1460,28 @@ fn stashed(event: &GcalEvent, prefix: &str) -> Vec<String> {
 
 /// Chunks the remainder into numbered extended properties under `prefix`.
 ///
-/// A line wider than a whole chunk would risk the write on its own, so
-/// it stays in the local document and is never sent.
-fn chunk_into(private: &mut BTreeMap<String, String>, prefix: &str, lines: &[String]) {
-    let kept: Vec<&str> = lines
-        .iter()
-        .map(String::as_str)
-        .filter(|line| line.len() <= MAX_STASH_CHUNK)
-        .collect();
+/// A unit, one property line or the lines of one component, is stored
+/// whole, a line running over as many chunks as it takes, or handed
+/// back when `room` holds less than its octets and line feeds.
+fn chunk_into(
+    private: &mut BTreeMap<String, String>,
+    prefix: &str,
+    units: Vec<Vec<String>>,
+    room: &mut usize,
+) -> Vec<Vec<String>> {
+    let mut kept = Vec::new();
+    let mut left_out = Vec::new();
 
-    if kept.is_empty() {
-        return;
+    for unit in units {
+        let cost: usize = unit.iter().map(|line| line.len() + 1).sum();
+
+        if cost > *room {
+            left_out.push(unit);
+            continue;
+        }
+
+        *room -= cost;
+        kept.extend(unit);
     }
 
     let mut chunk = String::new();
@@ -1436,6 +1498,8 @@ fn chunk_into(private: &mut BTreeMap<String, String>, prefix: &str, lines: &[Str
     if !chunk.is_empty() {
         private.insert(format!("{prefix}{index}"), chunk);
     }
+
+    left_out
 }
 
 /// Pushes raw lines at the end of a component, each folded afresh.
@@ -2041,7 +2105,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_too_long_for_a_chunk_stays_local_while_the_rest_is_chunked() {
+    fn a_line_too_long_for_a_chunk_runs_over_the_next_ones() {
         let long = format!("X-HUGE:{}", "a".repeat(MAX_STASH_CHUNK));
         let wide = format!("X-WIDE:{}", "b".repeat(MAX_STASH_CHUNK - 8));
         let calendar = CALENDAR.replace(
@@ -2056,11 +2120,11 @@ mod tests {
             .cloned()
             .collect();
 
-        assert!(!stash.contains("X-HUGE"), "the oversized line was sent");
+        assert!(stash.contains(&long), "the oversized line was left out");
         assert!(stash.contains("X-WIDE"));
         assert!(stash.contains("CATEGORIES:work,daily"));
 
-        assert!(private.len() >= 2);
+        assert!(private.len() >= 3);
         assert!(private.values().all(|chunk| chunk.len() <= MAX_STASH_CHUNK));
     }
 
@@ -2739,10 +2803,12 @@ mod tests {
 
             line.push(':');
 
-            // NOTE: empty, around the fold limit, or up to a chunk wide.
-            let width = match self.below(4) {
+            // NOTE: empty, around the fold limit, up to a chunk wide, or
+            // wider than three.
+            let width = match self.below(5) {
                 0 => self.below(8),
                 1 => 60 + self.below(30),
+                2 => self.below(4000),
                 _ => self.below(900),
             };
             let end = line.len() + width;
@@ -2943,6 +3009,93 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_line_wider_than_a_chunk_round_trips_whole() {
+        let wide = format!("X-WIDE:{}", "é".repeat(1500));
+        let nested = format!("NAME:{}", "日".repeat(1000));
+        let calendar = CALENDAR
+            .replace("CATEGORIES:work,daily\r\n", &format!("{wide}\r\n"))
+            .replace("NAME:Room 2\r\n", &format!("{nested}\r\n"));
+
+        let event = GcalEvent::from_ical(calendar.as_bytes()).unwrap();
+        let private = &event.extended_properties.as_ref().unwrap().private;
+        assert!(private.values().all(|chunk| chunk.len() <= MAX_STASH_CHUNK));
+
+        let ical = event.to_ical();
+        let lines = logical_lines(&ical);
+        assert!(lines.contains(&wide), "{ical}");
+        assert!(lines.contains(&nested), "{ical}");
+
+        let again = GcalEvent::from_ical(ical.as_bytes()).unwrap();
+        assert_eq!(again.extended_properties, event.extended_properties);
+    }
+
+    #[test]
+    fn a_stash_over_the_budget_tells_which_lines_stay_out() {
+        let lines: Vec<String> = (0..40)
+            .map(|index| format!("X-LINE-{index}:{}", "a".repeat(1000)))
+            .collect();
+        let name = format!("NAME:{}", "b".repeat(2000));
+        let calendar = CALENDAR
+            .replace(
+                "CATEGORIES:work,daily\r\n",
+                &format!("{}\r\n", lines.join("\r\n")),
+            )
+            .replace("NAME:Room 2\r\n", &format!("{name}\r\n"))
+            .replace("END:VLOCATION\r\n", "END:VLOCATION\r\nX-AFTER:1\r\n");
+
+        let err = GcalEvent::from_ical(calendar.as_bytes()).unwrap_err();
+        let message = err.to_string();
+        let GcalEventIcalError::StashFull { event, left_out } = err else {
+            panic!("expected a full stash: {err}");
+        };
+
+        // NOTE: 29 lines fill the budget, and what follows them stays
+        // out unit by unit, the component whole, while the two short
+        // lines after it still find room.
+        let (kept, mut dropped) = lines.split_at(29);
+        let component = [
+            String::from("BEGIN:VLOCATION"),
+            String::from("UID:room-2"),
+            name,
+            String::from("END:VLOCATION"),
+        ];
+        assert_eq!(left_out.last().unwrap(), &component);
+
+        for unit in &left_out[..left_out.len() - 1] {
+            assert_eq!(unit, &dropped[..1]);
+            dropped = &dropped[1..];
+        }
+        assert!(dropped.is_empty());
+
+        assert_eq!(
+            stored(&event, EVENT_STASH_PREFIX),
+            format!("{}\nX-AFTER:1", kept.join("\n"))
+        );
+        assert_eq!(stored(&event, CALENDAR_STASH_PREFIX), "X-WR-CALNAME:Work");
+        assert_eq!(event.summary.as_deref(), Some("Stand-up"));
+
+        assert!(message.contains("X-LINE-29, X-LINE-30"), "{message}");
+        assert!(message.ends_with("X-LINE-39, VLOCATION"), "{message}");
+
+        let private = &event.extended_properties.as_ref().unwrap().private;
+        let total: usize = private.values().map(String::len).sum();
+        assert!(total <= MAX_STASH_TOTAL);
+    }
+
+    #[test]
+    fn a_lead_time_past_what_fits_leaves_the_alarm_in_the_stash() {
+        // NOTE: the first overflows its product, the second the sum.
+        for trigger in ["-P99999999999999999W", "-P30000000000000W30000000000000W"] {
+            assert_eq!(lead_minutes(trigger), None, "{trigger}");
+
+            let calendar = CALENDAR.replace("TRIGGER:-PT15M", &format!("TRIGGER:{trigger}"));
+            let event = GcalEvent::from_ical(calendar.as_bytes()).unwrap();
+            assert!(event.reminders.as_ref().unwrap().overrides.is_empty());
+            assert!(stored(&event, EVENT_STASH_PREFIX).contains(trigger));
         }
     }
 }

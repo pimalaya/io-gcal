@@ -2,18 +2,17 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events/get>
 
-use alloc::{format, string::ToString};
+use alloc::string::ToString;
 
 use io_http::rfc6750::bearer::HttpAuthBearer;
 use log::{debug, trace};
-use url::Url;
 
 use crate::{
     coroutine::*,
     gcal_try,
     v3::{
         rest::events::GcalEvent,
-        send::{GCAL_API_BASE, GcalSend, GcalSendError, GcalSendOutput},
+        send::{GcalSend, GcalSendError, GcalSendOutput, gcal_api_url},
     },
 };
 
@@ -39,8 +38,7 @@ impl GcalEventGet {
         trace!("calendar_id: {calendar_id:?}");
         trace!("event_id: {event_id:?}");
 
-        let mut url = Url::parse(GCAL_API_BASE)?
-            .join(&format!("calendars/{calendar_id}/events/{event_id}"))?;
+        let mut url = gcal_api_url(&["calendars", calendar_id, "events", event_id])?;
 
         if let Some(max_attendees) = max_attendees {
             url.query_pairs_mut()
