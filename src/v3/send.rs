@@ -15,6 +15,7 @@ use alloc::{
 
 use io_http::{
     coroutine::*,
+    rfc3986::path::{HttpUrlBuildError, http_url_build},
     rfc6750::bearer::HttpAuthBearer,
     rfc9110::{
         request::HttpRequest,
@@ -359,6 +360,10 @@ impl<T: DeserializeOwned> GcalSend<T> {
     }
 
     /// Builds a request with an arbitrary method, content type and body.
+    ///
+    /// A method that is not an HTTP token, or a bearer token or content
+    /// type holding a line break, fails the first resume with
+    /// [`GcalSendError::InvalidRequest`], before any write.
     pub fn with_method(
         auth: &HttpAuthBearer,
         method: &str,
@@ -448,6 +453,10 @@ impl<T: DeserializeOwned> GcalCoroutine for GcalSend<T> {
                 }
                 HttpCoroutineState::Yielded(HttpSendYield::WantsRedirect { .. }) => {
                     GcalCoroutineState::Complete(Err(GcalSendError::UnexpectedRedirect))
+                }
+                HttpCoroutineState::Complete(Err(Http11SendError::InvalidRequest(err))) => {
+                    let err = GcalSendError::InvalidRequest(err.to_string());
+                    GcalCoroutineState::Complete(Err(err))
                 }
                 HttpCoroutineState::Complete(Err(err)) => {
                     GcalCoroutineState::Complete(Err(err.into()))
@@ -550,21 +559,13 @@ fn parse_delay(value: &str) -> Option<Duration> {
 /// rewrite is refused: an empty one, `.`, `..`, or one holding a tab
 /// or a line break.
 pub fn gcal_api_url(segments: &[&str]) -> Result<Url, GcalSendError> {
-    let mut url = Url::parse(GCAL_API_BASE)?;
-
-    for segment in segments {
-        if matches!(*segment, "" | "." | "..") || segment.contains(['\t', '\n', '\r']) {
+    http_url_build(GCAL_API_BASE, segments).map_err(|err| match err {
+        HttpUrlBuildError::InvalidBaseUrl(err, _) => GcalSendError::ParseUrl(err),
+        HttpUrlBuildError::InvalidSegment(segment) => {
             let reason = format!("Path segment {segment:?} names no resource");
-            return Err(GcalSendError::InvalidRequest(reason));
+            GcalSendError::InvalidRequest(reason)
         }
-    }
-
-    // NOTE: the base is hierarchical, so its path is always mutable.
-    if let Ok(mut path) = url.path_segments_mut() {
-        path.pop_if_empty().extend(segments);
-    }
-
-    Ok(url)
+    })
 }
 
 /// Parses Calendar's JSON error envelope, falling back to the raw body;

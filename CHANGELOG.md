@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Changed the io-http dependency to 0.7.
+
+  `GcalSendError::Send` carries its `Http11SendError`, which gains `UnsupportedTransferCoding`, `TooManyInterimResponses` and `InvalidRequest`, and `HttpAuthBearer` no longer implements `Display`.
 - Changed `GcalEvent::to_ical` and `to_ical_series` to fold every line they write at 75 octets, a recurrence line and a stashed line included (requires `ical` feature).
 
   The VTIMEZONE of a series come in name order, where those an exception alone names used to follow the master's.
@@ -58,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Fixed the `Debug` of `GcalChannel` and of `GcalEntryPoint`, hence the trace logs, showing the token of a channel and the PIN, access code, meeting code, passcode and password of a conference entry point.
+- Fixed a bearer token, a content type or a method holding a line break adding lines to the request.
+
+  The first resume fails with `GcalSendError::InvalidRequest`, before any write.
 
 ## [0.3.1] - 2026-11-12
 

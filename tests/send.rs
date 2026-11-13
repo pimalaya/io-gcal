@@ -1,19 +1,27 @@
 //! Offline coverage of the transport every coroutine delegates to:
 //! the authorized request builder, the JSON parsing, the error
-//! envelope, the redirect refusal and the keep-alive flag.
+//! envelope, the redirect refusal, the refusal of a request that would
+//! split and the keep-alive flag.
 
 mod common;
 
-use core::time::Duration;
+use core::{fmt::Debug, time::Duration};
 
 use common::*;
-use io_gcal::v3::{
-    rest::{
-        calendars::{delete::GcalCalendarDelete, get::GcalCalendarGet},
-        colors::get::GcalColorsGet,
+use io_gcal::{
+    coroutine::*,
+    v3::{
+        rest::{
+            calendars::{delete::GcalCalendarDelete, get::GcalCalendarGet},
+            colors::get::GcalColorsGet,
+        },
+        send::{
+            GCAL_API_BASE, GcalApiError, GcalNoResponse, GcalSend, GcalSendError, gcal_api_url,
+            parse_api_error,
+        },
     },
-    send::{GCAL_API_BASE, GcalApiError, GcalSendError, parse_api_error},
 };
+use io_http::rfc6750::bearer::HttpAuthBearer;
 
 #[test]
 fn targets_the_versioned_api_base() {
@@ -131,6 +139,39 @@ fn refuses_to_follow_a_redirect() {
         "got: {err}"
     );
     assert_eq!(err.status(), None);
+}
+
+/// Resumes a coroutine once and returns the reason it gives for
+/// refusing its own request, before any write.
+fn refusal<C, R>(mut coroutine: C) -> String
+where
+    C: GcalCoroutine<Yield = GcalYield, Return = Result<R, GcalSendError>>,
+    R: Debug,
+{
+    match coroutine.resume(None) {
+        GcalCoroutineState::Complete(Err(GcalSendError::InvalidRequest(reason))) => reason,
+        state => panic!("expected InvalidRequest, got {state:?}"),
+    }
+}
+
+#[test]
+fn refuses_a_token_a_method_or_a_content_type_holding_a_line_break() {
+    let split = HttpAuthBearer::new("fake-token\r\nX-Injected: 1");
+    let reason = refusal(GcalColorsGet::new(&split).unwrap());
+
+    assert!(reason.contains("Authorization"), "got: {reason}");
+    assert!(!reason.contains("fake-token"), "got: {reason}");
+
+    let url = gcal_api_url(&["colors"]).unwrap();
+    let method = "GET / HTTP/1.1\r\nX-Injected: 1\r\n\r\nGET";
+    let send = GcalSend::<GcalNoResponse>::with_method(&auth(), method, url.clone(), None, vec![]);
+
+    assert!(refusal(send).contains("method"));
+
+    let content_type = Some("application/json\r\nX-Injected: 1");
+    let send = GcalSend::<GcalNoResponse>::with_method(&auth(), "POST", url, content_type, vec![]);
+
+    assert!(refusal(send).contains("Content-Type"));
 }
 
 #[test]

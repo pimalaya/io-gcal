@@ -6,7 +6,7 @@ status: current
 
 # Requests
 
-Every coroutine builds one authorized HTTP request through `GcalSend`. This file holds what the crate guarantees about the path and the entity tag guard of that request, and about the error a refusal comes back as; the rest of the transport is not written down yet.
+Every coroutine builds one authorized HTTP request through `GcalSend`. This file holds what the crate guarantees about the path, the entity tag guard and the head of that request, and about the error a refusal comes back as; the rest of the transport is not written down yet.
 
 ### Requirement: An id is one path segment
 Every request path SHALL be built by `gcal_api_url` from its segments, each percent-encoded on its own, so that a calendar id, an event id, a rule id or a setting id holding `/`, `?`, `#`, `%` or a space names the resource it is the id of and no other. An id SHALL be passed as the API returns it, never encoded beforehand. A segment that is empty, `.` or `..`, or that holds a tab or a line break, SHALL be refused with `GcalSendError::InvalidRequest` before anything is written: the URL would drop or rewrite it.
@@ -23,6 +23,14 @@ Every request path SHALL be built by `gcal_api_url` from its segments, each perc
 
 ### Requirement: An entity tag cannot end its header line
 `GcalSend::with_guard`, `delete_if_match`, `put_json_if_match` and `patch_json_if_match`, and the event coroutines built on them, SHALL refuse with `GcalSendError::InvalidRequest` an entity tag holding a control character, a CR or an LF among them, before anything is written.
+
+### Requirement: No value of the caller adds a line to the request
+A bearer token or a content type holding a CR, an LF or a NUL, and a method that is not an HTTP token, SHALL fail the first resume of the coroutine with `GcalSendError::InvalidRequest`, before anything is written. The check is the one io-http makes when it serializes the request; its refusal SHALL NOT come back as `GcalSendError::Send`, and the reason of a refused header SHALL name the header and never its value.
+
+#### Scenario: A token holding a line break
+- GIVEN the bearer token `abc`, a CR LF, then `X-Injected: 1`
+- WHEN a coroutine built with it is resumed
+- THEN it completes with `InvalidRequest` naming `Authorization`, and asks for no write
 
 ### Requirement: A refusal keeps what the server said
 A non-2xx answer SHALL come back as `GcalSendError::Api` carrying a `GcalApiError`: the status (`error.code`, else the HTTP status), the message (else the raw body), the reasons of `error.errors[]` in order, the canonical `error.status`, the reasons of `error.details[]`, the delay the server asks for (the `Retry-After` header in seconds, else the `retryDelay` of `error.details[]`, a date or a malformed value reading as none) and whether the connection can be reused. A part of the envelope in an unexpected shape SHALL NOT cost the rest.
