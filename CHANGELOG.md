@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Changed `GcalEvent::to_ical` and `to_ical_series` to fold every line they write at 75 octets, a recurrence line and a stashed line included (requires `ical` feature).
+
+  The VTIMEZONE of a series come in name order, where those an exception alone names used to follow the master's.
+
+### Fixed
+
+- Fixed `GcalEvent::from_ical` stashing a folded line with its folds, which `to_ical` gave back with a stray CR in its value at each fold (requires `ical` feature).
+
+  The stash now holds unfolded lines, a stash stored folded reads back whole, and a folded RRULE, EXRULE, RDATE or EXDATE is sent unfolded.
+- Fixed `GcalEvent::to_ical` and `to_ical_series` splicing the recurrence, the stash, the alarms and the exceptions into a UID, SUMMARY, DESCRIPTION, LOCATION or name holding `END:VEVENT` or `END:VCALENDAR` (requires `ical` feature).
+
+  The document is built as one tree and serialized once.
+
 ## [0.3.1] - 2026-11-12
 
 ### Fixed

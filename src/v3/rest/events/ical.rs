@@ -21,8 +21,8 @@
 //!   Google Meet: it becomes a conference create request, which Google
 //!   honours when the write carries `conferenceDataVersion=1`, and is
 //!   never written back;
-//! - everything else is stashed verbatim in `extendedProperties.private`
-//!   and spliced back on read.
+//! - everything else is stashed in `extendedProperties.private`, one
+//!   logical line each, and put back on read.
 //!
 //! A series is written through its master, and one occurrence through its
 //! instance: [`GcalEvent::from_ical`] reads the master of a document, the
@@ -39,6 +39,7 @@ use core::{fmt, mem::take};
 
 use alloc::{
     borrow::ToOwned,
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
@@ -56,8 +57,10 @@ use ical::{
         codec::Codec,
         cst::{IcalCst, IcalItem},
         error::IcalParseError,
+        leaf::IcalLeaf,
         line::IcalLine,
         param::{cn::CN, cutype::CUTYPE, partstat::PARTSTAT, role::ROLE, tzid::TZID, value::VALUE},
+        wire::IcalWire,
     },
     tzdb,
     value::{IcalValue, datetime::IcalDateTime, integer::IcalInteger, text::IcalText},
@@ -67,6 +70,7 @@ use jiff::{
     civil::{Date, DateTime},
     tz::TimeZone,
 };
+use log::trace;
 
 use crate::v3::rest::{
     calendars::GcalConferenceSolutionType,
@@ -84,7 +88,7 @@ const PRODID: &str = "-//Pimalaya//calendula//EN";
 
 /// Widest value Google accepts in an extended property, hence a chunk.
 ///
-/// A single line longer than this stays in the local document, never
+/// A logical line longer than this stays in the local document, never
 /// sent, rather than risking the whole write.
 const MAX_STASH_CHUNK: usize = 1024;
 
@@ -128,15 +132,88 @@ const MAX_REMINDER_MINUTES: u64 = 40320;
 impl GcalEvent {
     /// Projects an io-gcal event onto a fresh VCALENDAR document.
     pub fn to_ical(&self) -> String {
+        self.to_ical_series(&[])
+    }
+
+    /// Folds a recurrence set into the one resource RFC 4791 4.1 requires.
+    ///
+    /// Google is instance-granular where CalDAV is resource-granular, so
+    /// without the fold two stores of the same calendar disagree about what
+    /// they hold. Each exception keeps the master's UID.
+    pub fn to_ical_series(&self, overrides: &[&GcalEvent]) -> String {
+        let master = self;
+        let uid = master.ical_uid.as_deref().or(master.id.as_deref());
+
+        let stash = stashed(master, EVENT_STASH_PREFIX);
+        let remainder = stashed(master, CALENDAR_STASH_PREFIX);
+        let stashes: Vec<Vec<String>> = overrides
+            .iter()
+            .map(|exception| stashed(exception, EVENT_STASH_PREFIX))
+            .collect();
+
+        let mut calendar = IcalCst::v2();
+        calendar.push(IcalProp::text(
+            IcalPropKind::ProdId,
+            vec![],
+            PRODID.to_string(),
+        ));
+        calendar.push_component(master.vevent(uid.unwrap_or_default(), &stash));
+        push_lines(&mut calendar, &remainder, &[]);
+
+        for (exception, stash) in overrides.iter().zip(&stashes) {
+            // NOTE: the components of one resource share one UID (RFC 4791
+            // 4.1), and an exception projected alone would mint its own
+            // from its event id when Google returned no iCalUID.
+            let uid = uid.or(exception.id.as_deref()).unwrap_or_default();
+            calendar.push_component(exception.vevent(uid, stash));
+        }
+
+        // NOTE: RFC 5545 3.2.19 makes every TZID owe a VTIMEZONE, and
+        // Google's resource holds the zone name alone. Sorted last, a TZID
+        // also reaching the document through the recurrence lines, the
+        // stash and an exception.
+        let mut referenced = BTreeSet::new();
+        let mut defined = BTreeSet::new();
+        sort_zones(&calendar, &mut referenced, &mut defined);
+
+        // NOTE: the zones are described around the start, in Unix seconds.
+        // Only the era matters, so its date alone is read, as UTC; an
+        // event with no start is refused on write, so the epoch never ships.
+        let anchor = master
+            .start
+            .as_ref()
+            .and_then(|boundary| boundary.date_time.as_deref().or(boundary.date.as_deref()))
+            .and_then(|stamp| stamp.get(..10))
+            .and_then(|date| date.parse::<Date>().ok())
+            .and_then(|date| date.to_zoned(TimeZone::UTC).ok())
+            .map_or(0, |zoned| zoned.timestamp().as_second());
+
+        let definitions = referenced
+            .difference(&defined)
+            .filter_map(|zone| tzdb::vtimezone(zone, anchor))
+            .map(|definition| IcalItem::Component(Box::new(definition)));
+
+        // NOTE: ahead of the VEVENT rather than at the end of the envelope,
+        // where Google's own CalDAV frontend puts it: a reader taking the
+        // document a line at a time then meets a definition before the
+        // property leaning on it.
+        let at = calendar
+            .items
+            .iter()
+            .position(|item| matches!(item, IcalItem::Component(_)))
+            .unwrap_or(calendar.items.len());
+
+        calendar.items.splice(at..at, definitions);
+
+        calendar.to_string()
+    }
+
+    /// The VEVENT of the event, its stashed lines put back.
+    fn vevent<'a>(&'a self, uid: &str, stash: &'a [String]) -> IcalCst<'a> {
         let event = self;
         let mut vevent = IcalCst::empty("VEVENT");
 
-        let uid = event
-            .ical_uid
-            .clone()
-            .or_else(|| event.id.clone())
-            .unwrap_or_default();
-        vevent.push(IcalProp::text(IcalPropKind::Uid, vec![], uid));
+        vevent.push(IcalProp::text(IcalPropKind::Uid, vec![], uid.to_string()));
 
         // NOTE: DTSTAMP is mandatory (RFC 5545 3.6.1) and Google carries no
         // field of its own for it, so the last modification time stands in.
@@ -254,86 +331,19 @@ impl GcalEvent {
             }
         }
 
-        let mut calendar = IcalCst::v2();
-        calendar.push(IcalProp::text(
-            IcalPropKind::ProdId,
-            vec![],
-            PRODID.to_string(),
-        ));
-        calendar.push_component(vevent);
+        push_lines(&mut vevent, &event.recurrence, &[]);
 
         // NOTE: the end is managed, so a stashed DTEND or DURATION would
         // double it or bring back the one left out above.
-        let mut depth = 0usize;
-        let stash = stashed(event, EVENT_STASH_PREFIX)
-            .into_iter()
-            .filter(|line| {
-                let name = line.split([';', ':']).next().unwrap_or_default();
+        push_lines(&mut vevent, stash, &["DTEND", "DURATION"]);
 
-                if name.eq_ignore_ascii_case("BEGIN") {
-                    depth += 1;
-                } else if name.eq_ignore_ascii_case("END") {
-                    depth = depth.saturating_sub(1);
-                }
-
-                depth > 0
-                    || !(name.eq_ignore_ascii_case("DTEND")
-                        || name.eq_ignore_ascii_case("DURATION"))
-            });
-
-        // NOTE: the recurrence lines and the stash are already iCalendar
-        // syntax, so they are spliced in verbatim; the alarms follow, so the
-        // VEVENT keeps its properties before its subcomponents.
-        let mut lines = event.recurrence.clone();
-        lines.extend(stash);
-
-        let document = splice_before(calendar.to_string(), "END:VEVENT", &lines);
-        let document = splice_before(document, "END:VEVENT", &alarms(event));
-
-        let document = splice_before(
-            document,
-            "END:VCALENDAR",
-            &stashed(event, CALENDAR_STASH_PREFIX),
-        );
-
-        define_zones(document, anchor(event))
-    }
-
-    /// Folds a recurrence set into the one resource RFC 4791 4.1 requires.
-    ///
-    /// Google is instance-granular where CalDAV is resource-granular, so
-    /// without the fold two stores of the same calendar disagree about what
-    /// they hold. Each exception keeps the master's UID.
-    pub fn to_ical_series(&self, overrides: &[&GcalEvent]) -> String {
-        let master = self;
-        let document = master.to_ical();
-
-        if overrides.is_empty() {
-            return document;
+        // NOTE: the alarms come last, so the VEVENT keeps its properties
+        // before its subcomponents.
+        for alarm in alarms(event) {
+            vevent.push_component(alarm);
         }
 
-        let uid = master.ical_uid.clone().or_else(|| master.id.clone());
-
-        let mut lines = Vec::new();
-
-        for exception in overrides {
-            let mut exception = (*exception).clone();
-
-            // NOTE: the components of one resource share one UID (RFC 4791
-            // 4.1), and an exception projected alone would mint its own
-            // from its event id when Google returned no iCalUID.
-            exception.ical_uid = uid.clone();
-
-            lines.extend(vevent_lines(&exception.to_ical()));
-        }
-
-        // NOTE: minted again over the whole document, since an exception
-        // moved into another zone names a TZID the master's own definitions
-        // never covered.
-        define_zones(
-            splice_before(document, "END:VCALENDAR", &lines),
-            anchor(master),
-        )
+        vevent
     }
 
     /// Projects an iCalendar document back onto an io-gcal event.
@@ -601,112 +611,25 @@ impl fmt::Display for GcalEventIcalError {
 
 impl core::error::Error for GcalEventIcalError {}
 
-/// Mints a VTIMEZONE for every zone the document names without defining.
-///
-/// RFC 5545 3.2.19 makes every TZID owe one, and Google's resource holds
-/// the zone name alone. Minted last, since a TZID also reaches the
-/// document through the recurrence lines, the stash and a folded
-/// exception.
-fn define_zones(document: String, anchor: i64) -> String {
-    let definitions: Vec<String> = undefined_zones(&document)
-        .iter()
-        .filter_map(|zone| tzdb::vtimezone(zone, anchor))
-        .flat_map(|definition| raw_component(&definition))
-        .collect();
-
-    // NOTE: ahead of the VEVENT rather than at the end of the envelope,
-    // where Google's own CalDAV frontend puts it: a reader taking the
-    // document a line at a time then meets a definition before the
-    // property leaning on it.
-    splice_before(document, "BEGIN:VEVENT", &definitions)
-}
-
-/// The VEVENT block of a projected document, BEGIN and END included.
-///
-/// Verbatim, so a folded exception keeps the wire form just written.
-fn vevent_lines(document: &str) -> Vec<String> {
-    let mut lines: Vec<String> = document
-        .lines()
-        .map(|line| line.trim_end_matches('\r'))
-        .skip_while(|line| !line.starts_with("BEGIN:VEVENT"))
-        .take_while(|line| !line.starts_with("END:VEVENT"))
-        .map(str::to_string)
-        .collect();
-
-    // NOTE: closes the block take_while stopped at, but a document
-    // holding no VEVENT must contribute nothing rather than a stray END.
-    if !lines.is_empty() {
-        lines.push(String::from("END:VEVENT"));
-    }
-
-    lines
-}
-
-/// Every zone the document names in a TZID parameter without defining
-/// it in a VTIMEZONE of its own.
-fn undefined_zones(document: &str) -> BTreeSet<String> {
-    let mut referenced = BTreeSet::new();
-    let mut defined = BTreeSet::new();
-
-    for line in unfolded(document) {
-        if let Some(zone) = line.strip_prefix("TZID:") {
-            defined.insert(zone.trim().to_string());
-            continue;
-        }
-
-        // NOTE: only the parameter section names a zone. Searching the
-        // whole line would let a SUMMARY reading `TZID=` conjure a
-        // component out of free text.
-        let params = line.split(':').next().unwrap_or(&line);
-
-        let Some(start) = params.find("TZID=") else {
-            continue;
-        };
-
-        let zone = &params[start + "TZID=".len()..];
-        let end = zone.find(';').unwrap_or(zone.len());
-        referenced.insert(zone[..end].trim_matches('"').to_string());
-    }
-
-    referenced.difference(&defined).cloned().collect()
-}
-
-/// The document's logical lines, RFC 5545 3.1 folds resolved.
-///
-/// A folded line is one line split across several physical ones, so
-/// reading the physical ones would see a zone name cut in half.
-fn unfolded(document: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-
-    for line in document.lines() {
-        let line = line.trim_end_matches('\r');
-        let continuation = line.strip_prefix([' ', '\t']);
-
-        match (continuation, lines.last_mut()) {
-            (Some(rest), Some(last)) => last.push_str(rest),
-            _ => lines.push(line.to_string()),
+/// Sorts the zones a component names in a TZID parameter from those it
+/// defines in a TZID property, its subcomponents included.
+fn sort_zones(
+    component: &IcalCst<'_>,
+    referenced: &mut BTreeSet<String>,
+    defined: &mut BTreeSet<String>,
+) {
+    for item in &component.items {
+        match item {
+            IcalItem::Prop(line) if line.name.get().eq_ignore_ascii_case("TZID") => {
+                defined.insert(line.raw_value_str().trim().to_string());
+            }
+            IcalItem::Prop(line) => {
+                referenced.extend(line.param::<TZID>().map(|zone| zone.into_owned()));
+            }
+            IcalItem::Component(child) => sort_zones(child, referenced, defined),
+            IcalItem::Opaque(_) => {}
         }
     }
-
-    lines
-}
-
-/// The instant an event's zones are described around, in Unix seconds.
-///
-/// Only the era matters, observances changing on the scale of years, so
-/// the start date alone is read, as UTC, off by a day at worst. An
-/// event with no start is refused on write, so the epoch never ships.
-fn anchor(event: &GcalEvent) -> i64 {
-    let boundary = event
-        .start
-        .as_ref()
-        .and_then(|boundary| boundary.date_time.as_deref().or(boundary.date.as_deref()));
-
-    boundary
-        .and_then(|stamp| stamp.get(..10))
-        .and_then(|date| date.parse::<Date>().ok())
-        .and_then(|date| date.to_zoned(TimeZone::UTC).ok())
-        .map_or(0, |zoned| zoned.timestamp().as_second())
 }
 
 /// Carries a boundary's display zone over from the server copy.
@@ -970,7 +893,7 @@ fn meet_request(uid: &str, stamp: &str) -> GcalConferenceData {
 /// A reminder missing its method or its lead time projects to nothing,
 /// and a set is projected only when it overrides the calendar's
 /// defaults, which belong to the calendar and not to this event.
-fn alarms(event: &GcalEvent) -> Vec<String> {
+fn alarms(event: &GcalEvent) -> impl Iterator<Item = IcalCst<'static>> {
     event
         .reminders
         .iter()
@@ -983,16 +906,13 @@ fn alarms(event: &GcalEvent) -> Vec<String> {
             };
             let minutes = reminder.minutes?;
 
-            Some(vec![
-                String::from("BEGIN:VALARM"),
-                format!("ACTION:{action}"),
-                format!("TRIGGER:-PT{minutes}M"),
-                String::from("DESCRIPTION:Reminder"),
-                String::from("END:VALARM"),
-            ])
+            let mut alarm = IcalCst::empty("VALARM");
+            alarm.push_line(IcalLine::text("ACTION", action));
+            alarm.push_line(IcalLine::text("TRIGGER", format!("-PT{minutes}M")));
+            alarm.push_line(IcalLine::text("DESCRIPTION", "Reminder"));
+
+            Some(alarm)
         })
-        .flatten()
-        .collect()
 }
 
 /// Projects a VALARM back onto a Google reminder override.
@@ -1154,7 +1074,7 @@ fn shifted(start: &GcalEventDateTime, duration: Span) -> Option<GcalEventDateTim
 ///
 /// A `VALUE=DATE` property for an all-day one, a UTC stamp for a timed
 /// one carrying an offset, a `TZID` stamp for a named zone.
-fn push_boundary(vevent: &mut IcalCst<'static>, kind: IcalPropKind, boundary: &GcalEventDateTime) {
+fn push_boundary(vevent: &mut IcalCst<'_>, kind: IcalPropKind, boundary: &GcalEventDateTime) {
     if let Some(date) = &boundary.date {
         let Some(stamp) = ical_date(date) else {
             return;
@@ -1449,6 +1369,9 @@ fn partstat_from_ical(value: &str) -> Option<GcalEventAttendeeResponseStatus> {
 }
 
 /// The stashed lines under `prefix`, chunks reassembled in key order.
+///
+/// A stash once kept the folds of a line, each a CR, a break and a
+/// whitespace, and a document read back from it one more CR per fold.
 fn stashed(event: &GcalEvent, prefix: &str) -> Vec<String> {
     let Some(properties) = &event.extended_properties else {
         return Vec::new();
@@ -1464,13 +1387,24 @@ fn stashed(event: &GcalEvent, prefix: &str) -> Vec<String> {
         .collect();
     chunks.sort_by_key(|(index, _)| *index);
 
-    let joined: String = chunks.into_iter().map(|(_, value)| value).collect();
+    let joined: String = chunks
+        .into_iter()
+        .flat_map(|(_, value)| value.chars())
+        .filter(|character| *character != '\r')
+        .collect();
 
-    if joined.is_empty() {
-        return Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+
+    for piece in joined.split('\n').filter(|piece| !piece.is_empty()) {
+        let continuation = piece.strip_prefix([' ', '\t']);
+
+        match (continuation, lines.last_mut()) {
+            (Some(rest), Some(last)) => last.push_str(rest),
+            _ => lines.push(piece.to_string()),
+        }
     }
 
-    joined.split('\n').map(str::to_string).collect()
+    lines
 }
 
 /// Chunks the remainder into numbered extended properties under `prefix`.
@@ -1504,22 +1438,53 @@ fn chunk_into(private: &mut BTreeMap<String, String>, prefix: &str, lines: &[Str
     }
 }
 
-/// Splices raw lines into a serialized document, right before `marker`.
-fn splice_before(document: String, marker: &str, lines: &[String]) -> String {
-    if lines.is_empty() {
-        return document;
+/// Pushes raw lines at the end of a component, each folded afresh.
+///
+/// The lines stay balanced: an END closing nothing is left out, and a
+/// BEGIN left open is closed. A `managed` property is left out too,
+/// unless a subcomponent holds it.
+fn push_lines<'a>(component: &mut IcalCst<'a>, lines: &'a [String], managed: &[&str]) {
+    let mut open: Vec<String> = Vec::new();
+
+    for text in lines {
+        let mut rest = text.as_bytes();
+
+        while !rest.is_empty() {
+            let (mut line, tail) = match IcalLine::take(rest) {
+                Ok(taken) => taken,
+                Err(err) => {
+                    trace!("skip a line that is no content line: {err}");
+                    break;
+                }
+            };
+
+            rest = tail;
+
+            let name = line.name.get();
+
+            if name.eq_ignore_ascii_case("BEGIN") {
+                open.push(line.raw_value_str().into_owned());
+            } else if name.eq_ignore_ascii_case("END") {
+                if open.pop().is_none() {
+                    continue;
+                }
+            } else if open.is_empty() && managed.iter().any(|m| name.eq_ignore_ascii_case(m)) {
+                continue;
+            }
+
+            // NOTE: the shape a line is read in would be written back as
+            // it is, a line wider than 75 octets included.
+            line.wire = IcalWire::default();
+            line.eol = IcalLeaf::from("\r\n");
+
+            component.items.push(IcalItem::Prop(line));
+        }
     }
 
-    let mut extra = lines.join("\r\n");
-    extra.push_str("\r\n");
-
-    match document.find(marker) {
-        Some(position) => {
-            let mut out = document;
-            out.insert_str(position, &extra);
-            out
-        }
-        None => document + &extra,
+    while let Some(name) = open.pop() {
+        component
+            .items
+            .push(IcalItem::Prop(IcalLine::text("END", name)));
     }
 }
 
@@ -1551,19 +1516,43 @@ fn text(line: &IcalLine<'_>) -> String {
     IcalText::decode(&line.value).0.into_owned()
 }
 
-/// One logical line, its ending stripped, ready for the stash.
+/// One logical line, neither folded nor ended, ready for the stash.
+///
+/// A CR, which no content line holds, is dropped: the stash once left
+/// one at each fold of the documents read back from it.
 fn raw_line(line: &IcalLine<'_>) -> String {
-    line.to_string().trim_end_matches(['\r', '\n']).to_string()
+    let mut raw = String::from(line.name.get());
+
+    for param in &line.params {
+        raw.push(';');
+        raw.push_str(&param.to_string());
+    }
+
+    raw.push(':');
+    raw.push_str(&line.raw_value_str());
+    raw.retain(|character| character != '\r');
+
+    raw
 }
 
-/// A whole component as its raw lines, endings stripped.
+/// A whole component as its logical lines, its envelope included.
 fn raw_component(component: &IcalCst<'_>) -> Vec<String> {
-    component
-        .to_string()
-        .lines()
-        .map(|line| line.trim_end_matches('\r').to_string())
-        .filter(|line| !line.is_empty())
-        .collect()
+    let mut lines: Vec<String> = component.begin.iter().map(raw_line).collect();
+
+    for item in &component.items {
+        match item {
+            IcalItem::Prop(line) => lines.push(raw_line(line)),
+            IcalItem::Component(child) => lines.extend(raw_component(child)),
+            IcalItem::Opaque(bytes) => {
+                let line = String::from_utf8_lossy(bytes);
+                lines.push(line.trim_end_matches(['\r', '\n']).to_string());
+            }
+        }
+    }
+
+    lines.extend(component.end.iter().map(raw_line));
+
+    lines
 }
 
 #[cfg(test)]
@@ -2550,5 +2539,410 @@ mod tests {
         assert_eq!(merged.recurring_event_id.as_deref(), Some("master-1"));
         assert_eq!(merged.original_start_time, Some(original));
         assert_eq!(merged.summary.as_deref(), Some("Stand-up moved"));
+    }
+
+    /// The logical lines of a projected document, its folds resolved.
+    fn logical_lines(document: &str) -> Vec<String> {
+        document
+            .replace("\r\n ", "")
+            .split("\r\n")
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The stash under `prefix` as it is stored, chunks joined in order.
+    fn stored(event: &GcalEvent, prefix: &str) -> String {
+        let private = &event.extended_properties.as_ref().unwrap().private;
+
+        (0..)
+            .map_while(|index| private.get(&format!("{prefix}{index}")))
+            .cloned()
+            .collect()
+    }
+
+    /// An event whose VEVENT stash is stored as `stash`, in one chunk.
+    fn stashing(stash: String) -> GcalEvent {
+        let boundary = |stamp: &str| {
+            Some(GcalEventDateTime {
+                date_time: Some(String::from(stamp)),
+                ..Default::default()
+            })
+        };
+
+        GcalEvent {
+            ical_uid: Some(String::from("stash@example.org")),
+            start: boundary("2026-08-14T09:00:00Z"),
+            end: boundary("2026-08-14T10:00:00Z"),
+            extended_properties: Some(GcalEventExtendedProperties {
+                private: BTreeMap::from([(format!("{EVENT_STASH_PREFIX}0"), stash)]),
+                shared: BTreeMap::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_folded_line_is_stashed_whole_and_comes_back_without_a_stray_cr() {
+        let url = format!("URL:https://example.org/{}", "a".repeat(120));
+        let name = format!("NAME:{}", "b".repeat(120));
+
+        // NOTE: the last fold is one a stray CR already slipped into.
+        for fold in ["\r\n ", "\r\n\t", "\n ", "\r\r\n "] {
+            let folded = |line: &str| format!("{}{fold}{}\r\n", &line[..70], &line[70..]);
+            let calendar = CALENDAR
+                .replace("CATEGORIES:work,daily\r\n", &folded(&url))
+                .replace("NAME:Room 2\r\n", &folded(&name));
+
+            let event = GcalEvent::from_ical(calendar.as_bytes()).unwrap();
+            let stash = stored(&event, EVENT_STASH_PREFIX);
+            let lines: Vec<&str> = stash.split('\n').collect();
+            assert!(lines.contains(&url.as_str()), "{fold:?}: {stash:?}");
+            assert!(lines.contains(&name.as_str()), "{fold:?}: {stash:?}");
+
+            let ical = event.to_ical();
+            assert!(!ical.contains("\r\r"), "{fold:?}: {ical:?}");
+
+            let lines = logical_lines(&ical);
+            assert!(lines.contains(&url), "{fold:?}: {ical:?}");
+            assert!(lines.contains(&name), "{fold:?}: {ical:?}");
+
+            let again = GcalEvent::from_ical(ical.as_bytes()).unwrap();
+            assert_eq!(again.extended_properties, event.extended_properties);
+        }
+    }
+
+    #[test]
+    fn a_folded_recurrence_line_is_sent_unfolded() {
+        let exdate = format!("EXDATE:{}", ["20260821T090000Z"; 8].join(","));
+        let calendar = CALENDAR.replace(
+            "CATEGORIES:work,daily\r\n",
+            &format!("{}\r\n {}\r\n", &exdate[..70], &exdate[70..]),
+        );
+
+        let event = GcalEvent::from_ical(calendar.as_bytes()).unwrap();
+        assert_eq!(
+            event.recurrence,
+            vec![String::from("RRULE:FREQ=WEEKLY;COUNT=4"), exdate.clone()]
+        );
+
+        // NOTE: the API returns the line whole, whatever its width.
+        let ical = event.to_ical();
+        assert!(ical.lines().all(|line| line.len() <= 75), "{ical}");
+        assert!(logical_lines(&ical).contains(&exdate), "{ical}");
+    }
+
+    /// A fold was once stored as read, then with one more CR each time
+    /// the document came back.
+    #[test]
+    fn a_stash_stored_with_its_folds_reads_back_whole() {
+        let url = format!("URL:https://example.org/{}", "a".repeat(120));
+
+        for fold in ["\r\n ", "\r\n\t", "\n ", "\r\r\n ", "\r\r\r\n "] {
+            let event = stashing(format!(
+                "CATEGORIES:work\n{}{fold}{}\nBEGIN:VLOCATION\nNAME:Room 2\nEND:VLOCATION",
+                &url[..70],
+                &url[70..],
+            ));
+
+            let ical = event.to_ical();
+            assert!(!ical.contains("\r\r"), "{fold:?}: {ical:?}");
+            assert!(logical_lines(&ical).contains(&url), "{fold:?}: {ical:?}");
+            assert!(
+                ical.contains("CATEGORIES:work\r\nURL:"),
+                "{fold:?}: {ical:?}"
+            );
+            assert!(
+                ical.contains("BEGIN:VLOCATION\r\nNAME:Room 2\r\nEND:VLOCATION\r\nEND:VEVENT\r\n"),
+                "{fold:?}: {ical:?}"
+            );
+        }
+    }
+
+    /// A stash another writer left unbalanced never closes the VEVENT
+    /// early nor leaves a component open.
+    #[test]
+    fn an_unbalanced_stash_never_breaks_the_document() {
+        let event = stashing(String::from(
+            "END:VEVENT\nCATEGORIES:work\nno content line\nBEGIN:VLOCATION\nNAME:Room 2",
+        ));
+
+        let ical = event.to_ical();
+        assert!(
+            ical.ends_with(concat!(
+                "CATEGORIES:work\r\n",
+                "BEGIN:VLOCATION\r\n",
+                "NAME:Room 2\r\n",
+                "END:VLOCATION\r\n",
+                "END:VEVENT\r\n",
+                "END:VCALENDAR\r\n",
+            )),
+            "{ical}"
+        );
+        assert_eq!(ical.matches("END:VEVENT").count(), 1, "{ical}");
+    }
+
+    /// A xorshift generator, so every run draws the same cases.
+    struct Cases(u64);
+
+    impl Cases {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+
+        fn pick<'a>(&mut self, pool: &[&'a str]) -> &'a str {
+            pool[self.below(pool.len())]
+        }
+
+        /// A content line no Google field models, of any name and width.
+        fn line(&mut self) -> String {
+            const NAMES: &[&str] = &[
+                "CATEGORIES",
+                "COMMENT",
+                "URL",
+                "ATTACH",
+                "GEO",
+                "RESOURCES",
+                "RELATED-TO",
+                "X-APPLE-STRUCTURED-LOCATION",
+            ];
+            const TOKEN: &[&str] = &["A", "Q", "Z", "b", "x", "0", "9", "-"];
+            const PARAMS: &[&str] = &[
+                "LANGUAGE=fr",
+                "FMTTYPE=text/plain",
+                "X-KEY=clé",
+                "X-FLAG",
+                "ALTREP=\"cid:part;one\"",
+                "X-ADDRESS=\"12 rue de l'Été: 東京\"",
+            ];
+            const TEXT: &[&str] = &[
+                "a", "Z", "7", " ", ":", ";", ",", "\\", "\"", "=", "-", "é", "ß", "日", "本", "😀",
+            ];
+
+            let mut line = match self.below(3) {
+                0 => String::from(self.pick(NAMES)),
+                _ => String::from("X-"),
+            };
+
+            if line == "X-" {
+                for _ in 0..=self.below(24) {
+                    line.push_str(self.pick(TOKEN));
+                }
+            }
+
+            for _ in 0..self.below(3) {
+                line.push(';');
+                line.push_str(self.pick(PARAMS));
+            }
+
+            line.push(':');
+
+            // NOTE: empty, around the fold limit, or up to a chunk wide.
+            let width = match self.below(4) {
+                0 => self.below(8),
+                1 => 60 + self.below(30),
+                _ => self.below(900),
+            };
+            let end = line.len() + width;
+
+            while line.len() < end {
+                line.push_str(self.pick(TEXT));
+            }
+
+            line
+        }
+
+        /// Folds a line at any octet, or between characters only.
+        fn fold(&mut self, line: &str, between_characters: bool) -> Vec<u8> {
+            let rate = 2 + self.below(80);
+            let mut wire = Vec::new();
+
+            for (at, byte) in line.bytes().enumerate() {
+                let allowed = at > 0 && (!between_characters || line.is_char_boundary(at));
+
+                if allowed && self.below(rate) == 0 {
+                    wire.extend_from_slice(self.pick(&["\r\n ", "\r\n\t", "\n "]).as_bytes());
+                }
+
+                wire.push(byte);
+            }
+
+            wire
+        }
+    }
+
+    #[test]
+    fn any_unmanaged_line_survives_the_round_trip_however_it_is_folded() {
+        let (head, rest) = CALENDAR.split_once("CATEGORIES:work,daily\r\n").unwrap();
+        let (body, tail) = rest.split_once("NAME:Room 2\r\n").unwrap();
+        let mut cases = Cases(0x9e37_79b9_7f4a_7c15);
+
+        for case in 0..500 {
+            // NOTE: the former stash kept a fold as text, so it only
+            // ever held one between two characters.
+            let between_characters = case % 2 == 0;
+
+            let mut lines: Vec<String> = (0..=cases.below(3)).map(|_| cases.line()).collect();
+            let nested = cases.line();
+
+            let mut document = head.as_bytes().to_vec();
+            let mut former = Vec::new();
+
+            for line in &lines {
+                let folded = cases.fold(line, between_characters);
+                document.extend_from_slice(&folded);
+                document.extend_from_slice(b"\r\n");
+                former.push(String::from_utf8_lossy(&folded).into_owned());
+            }
+
+            let folded = cases.fold(&nested, between_characters);
+            document.extend_from_slice(body.as_bytes());
+            document.extend_from_slice(&folded);
+            document.extend_from_slice(b"\r\n");
+            document.extend_from_slice(tail.as_bytes());
+
+            lines.extend([
+                String::from("BEGIN:VLOCATION"),
+                String::from("UID:room-2"),
+                nested,
+                String::from("END:VLOCATION"),
+            ]);
+            former.extend([
+                String::from("BEGIN:VLOCATION"),
+                String::from("UID:room-2"),
+                String::from_utf8_lossy(&folded).replace('\r', ""),
+                String::from("END:VLOCATION"),
+            ]);
+
+            let event = GcalEvent::from_ical(&document).unwrap();
+            assert_eq!(
+                stored(&event, EVENT_STASH_PREFIX),
+                lines.join("\n"),
+                "case {case}"
+            );
+
+            let ical = event.to_ical();
+            assert!(
+                ical.lines().all(|line| line.len() <= 75),
+                "case {case}: {ical:?}"
+            );
+            assert!(
+                !ical.replace("\r\n", "").contains(['\r', '\n']),
+                "case {case}: {ical:?}"
+            );
+
+            let projected = logical_lines(&ical);
+            let mut projected = projected.iter();
+
+            for line in &lines {
+                assert!(
+                    projected.any(|projected| projected == line),
+                    "case {case}: {line:?} missing from {ical:?}"
+                );
+            }
+
+            let again = GcalEvent::from_ical(ical.as_bytes()).unwrap();
+            assert_eq!(
+                again.extended_properties, event.extended_properties,
+                "case {case}"
+            );
+            assert_eq!(again.to_ical(), ical, "case {case}");
+
+            if between_characters {
+                let mut legacy = event.clone();
+                let private = &mut legacy.extended_properties.as_mut().unwrap().private;
+                private.retain(|key, _| !key.starts_with(EVENT_STASH_PREFIX));
+                private.insert(format!("{EVENT_STASH_PREFIX}0"), former.join("\n"));
+
+                assert_eq!(legacy.to_ical(), ical, "case {case}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_text_holding_a_marker_leaves_every_line_in_its_component() {
+        let zoned = |stamp: &str| {
+            Some(GcalEventDateTime {
+                date_time: Some(String::from(stamp)),
+                time_zone: Some(String::from("Europe/Paris")),
+                ..Default::default()
+            })
+        };
+
+        let mut series = event();
+        series.start = zoned("2026-08-14T09:00:00");
+        series.end = zoned("2026-08-14T10:00:00");
+        series.conference_data = Some(meet());
+
+        let mut exception = series.clone();
+        exception.recurrence.clear();
+        exception.summary = Some(String::from("Stand-up moved"));
+        exception.original_start_time = zoned("2026-08-21T09:00:00");
+
+        let mark = |event: &mut GcalEvent, field: usize, text: &str| {
+            let text = Some(String::from(text));
+
+            match field {
+                0 => event.ical_uid = text,
+                1 => event.summary = text,
+                2 => event.description = text,
+                3 => event.location = text,
+                4 => event.organizer.as_mut().unwrap().display_name = text,
+                5 => event.attendees[0].display_name = text,
+                _ => {
+                    if let Some(conference) = &mut event.conference_data {
+                        conference.entry_points[0].label = text;
+                    }
+                }
+            }
+        };
+
+        let document = series.to_ical_series(&[&exception]);
+        let read = GcalEvent::from_ical(document.as_bytes()).unwrap();
+
+        for marker in [
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "BEGIN:VEVENT",
+            "BEGIN:VALARM",
+        ] {
+            for text in [marker.to_string(), format!("about {marker} here")] {
+                for field in 0..7 {
+                    let mut marked = series.clone();
+                    mark(&mut marked, field, &text);
+
+                    let mut expected = read.clone();
+                    mark(&mut expected, field, &text);
+
+                    let document = marked.to_ical_series(&[&exception]);
+                    let back = GcalEvent::from_ical(document.as_bytes())
+                        .unwrap_or_else(|err| panic!("{text:?} in field {field}: {err}"));
+                    assert_eq!(back, expected, "{text:?} in field {field}:\n{document}");
+
+                    let calendar = IcalCst::parse(&document).unwrap();
+                    let count = |name: &str| {
+                        calendar
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                matches!(item, IcalItem::Component(child) if is_named(child, name))
+                            })
+                            .count()
+                    };
+                    assert_eq!(count("VEVENT"), 2, "{text:?} in field {field}:\n{document}");
+                    assert_eq!(
+                        count("VTIMEZONE"),
+                        1,
+                        "{text:?} in field {field}:\n{document}"
+                    );
+                    assert!(
+                        document.ends_with("END:VEVENT\r\nEND:VCALENDAR\r\n"),
+                        "{text:?} in field {field}:\n{document}"
+                    );
+                }
+            }
+        }
     }
 }
