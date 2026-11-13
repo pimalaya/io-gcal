@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `GcalEventIcalError::StashFull`, returned by `GcalEvent::from_ical` when a document holds more unmanaged lines than Google stores beside an event (requires `ical` feature). **Breaking** for an exhaustive match.
 
   It carries the event, stashing every line it has room for, and the lines left out.
+- Added `GcalApiError`, the Calendar error envelope: its status and message, the reasons of `errors[]` and `details[]`, the canonical status, the delay the server asks for (`Retry-After`, else `retryDelay`) and whether the connection can be reused.
+- Added `GcalSendError::api`, `retry_after`, `is_rate_limited` and `is_not_found`.
+- Added an `Unknown(String)` variant to the 18 enums read from the server, keeping a value this crate does not know as the API spells it. **Breaking**: these enums are no longer `Copy`, and an exhaustive match gains an arm.
+
+  A full update writes the value back as it was read.
 
 ### Changed
 
@@ -23,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Changed every coroutine to percent-encode the ids of its request path, so an id is passed as the API returns it. **Breaking** for a caller that encoded an id itself.
 
   An empty, `.` or `..` id, or one holding a tab or a line break, is refused with `GcalSendError::InvalidRequest`.
+- Changed `GcalSendError::Api` to carry a `GcalApiError`. **Breaking.**
+- Changed `GcalSendError::is_retryable` to count a rate limit Calendar answers with a 403 (`rateLimitExceeded`, `userRateLimitExceeded`, `quotaExceeded`).
+- Changed `GcalSendError::is_sync_token_expired` to be false for a 410 whose reason is `deleted`, which speaks of a resource that is gone and not of the token.
+
+  Every other 410 still reads as an expired token, one giving an unknown reason or none included.
+- Changed `GcalEvent::merge` to take from the server copy a status, transparency, visibility, attendee response or reminder method this crate does not know, which no document can hold (requires `ical` feature).
 
 ### Fixed
 
@@ -33,13 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `GcalEvent::from_ical` overflowing on a VALARM whose trigger counts more seconds than fit, which panicked a build with overflow checks (requires `ical` feature).
 
   Such an alarm stays in the stash.
+- Fixed one value outside an enum failing a whole response, a page of events or the calendar list among them.
+- Fixed `GcalEvent::merge` turning the default reminders of the calendar back on for an event whose reminders are off (requires `ical` feature).
 
+  A document without VALARM leaves `useDefault` as the server has it, and an alarm taken out of a document turns the reminders off.
 - Fixed `GcalEvent::from_ical` stashing a folded line with its folds, which `to_ical` gave back with a stray CR in its value at each fold (requires `ical` feature).
 
   The stash now holds unfolded lines, a stash stored folded reads back whole, and a folded RRULE, EXRULE, RDATE or EXDATE is sent unfolded.
 - Fixed `GcalEvent::to_ical` and `to_ical_series` splicing the recurrence, the stash, the alarms and the exceptions into a UID, SUMMARY, DESCRIPTION, LOCATION or name holding `END:VEVENT` or `END:VCALENDAR` (requires `ical` feature).
 
   The document is built as one tree and serialized once.
+
+### Security
+
+- Fixed the `Debug` of `GcalChannel` and of `GcalEntryPoint`, hence the trace logs, showing the token of a channel and the PIN, access code, meeting code, passcode and password of a conference entry point.
 
 ## [0.3.1] - 2026-11-12
 

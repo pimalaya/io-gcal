@@ -271,23 +271,17 @@ impl GcalEvent {
             }
         }
 
-        if let Some(status) = event.status {
-            vevent.push(IcalProp::text(
-                IcalPropKind::Status,
-                vec![],
-                status_to_ical(status),
-            ));
+        // NOTE: a value this crate does not know has no iCalendar form,
+        // and projects to no line.
+        if let Some(status) = event.status.as_ref().and_then(status_to_ical) {
+            vevent.push(IcalProp::text(IcalPropKind::Status, vec![], status));
         }
 
-        if let Some(transparency) = event.transparency {
-            vevent.push(IcalProp::text(
-                IcalPropKind::Transp,
-                vec![],
-                transparency_to_ical(transparency),
-            ));
+        if let Some(transparency) = event.transparency.as_ref().and_then(transparency_to_ical) {
+            vevent.push(IcalProp::text(IcalPropKind::Transp, vec![], transparency));
         }
 
-        if let Some(class) = event.visibility.and_then(visibility_to_ical) {
+        if let Some(class) = event.visibility.as_ref().and_then(visibility_to_ical) {
             vevent.push(IcalProp::text(IcalPropKind::Class, vec![], class));
         }
 
@@ -553,6 +547,61 @@ impl GcalEvent {
         carry_display_zone(&mut projected.start, current.start.as_ref());
         carry_display_zone(&mut projected.end, current.end.as_ref());
 
+        let kept = current.reminders.as_ref();
+
+        if let Some(reminders) = &mut projected.reminders {
+            // NOTE: a document without VALARM says nothing of the
+            // reminders, which stay as the server has them: on the
+            // calendar's defaults, or off.
+            if reminders.overrides.is_empty() {
+                let use_default = kept.and_then(|kept| kept.use_default);
+                reminders.use_default = use_default.or(reminders.use_default);
+            }
+
+            reminders.overrides.extend(
+                kept.iter()
+                    .flat_map(|kept| &kept.overrides)
+                    .filter(|kept| matches!(kept.method, Some(GcalEventReminderMethod::Unknown(_))))
+                    .cloned(),
+            );
+        }
+
+        // NOTE: a value this crate does not know has no iCalendar form,
+        // so a document cannot hold it: it comes from the server copy.
+        if projected.status.is_none() && matches!(current.status, Some(GcalEventStatus::Unknown(_)))
+        {
+            projected.status = current.status.clone();
+        }
+
+        if projected.transparency.is_none()
+            && matches!(
+                current.transparency,
+                Some(GcalEventTransparency::Unknown(_))
+            )
+        {
+            projected.transparency = current.transparency.clone();
+        }
+
+        if projected.visibility.is_none()
+            && matches!(current.visibility, Some(GcalEventVisibility::Unknown(_)))
+        {
+            projected.visibility = current.visibility.clone();
+        }
+
+        for attendee in &mut projected.attendees {
+            let kept = current
+                .attendees
+                .iter()
+                .find(|kept| kept.email.is_some() && kept.email == attendee.email)
+                .and_then(|kept| kept.response_status.as_ref());
+
+            if attendee.response_status.is_none()
+                && let Some(status @ GcalEventAttendeeResponseStatus::Unknown(_)) = kept
+            {
+                attendee.response_status = Some(status.clone());
+            }
+        }
+
         let original_start_time = projected.original_start_time.take();
 
         GcalEvent {
@@ -572,7 +621,7 @@ impl GcalEvent {
             // standing.
             color_id: current.color_id.clone(),
             event_label_id: current.event_label_id.clone(),
-            event_type: current.event_type,
+            event_type: current.event_type.clone(),
             anyone_can_add_self: current.anyone_can_add_self,
             guests_can_invite_others: current.guests_can_invite_others,
             guests_can_modify: current.guests_can_modify,
@@ -887,11 +936,11 @@ fn conference_prop(entry: &GcalEntryPoint) -> Option<IcalProp<'static>> {
     let uri = entry.uri.as_deref().filter(|uri| !uri.is_empty())?;
     let mut params = vec![IcalParam::Value("URI".into())];
 
-    let features: &[&str] = match entry.entry_point_type {
+    let features: &[&str] = match &entry.entry_point_type {
         Some(GcalEntryPointType::Video) => &["AUDIO", "VIDEO"],
         Some(GcalEntryPointType::Phone) => &["PHONE"],
         Some(GcalEntryPointType::Sip) => &["AUDIO"],
-        Some(GcalEntryPointType::More) | None => &[],
+        Some(GcalEntryPointType::More | GcalEntryPointType::Unknown(_)) | None => &[],
     };
 
     if !features.is_empty() {
@@ -950,9 +999,10 @@ fn alarms(event: &GcalEvent) -> impl Iterator<Item = IcalCst<'static>> {
         .filter(|reminders| reminders.use_default != Some(true))
         .flat_map(|reminders| &reminders.overrides)
         .filter_map(|reminder| {
-            let action = match reminder.method? {
+            let action = match reminder.method.as_ref()? {
                 GcalEventReminderMethod::Email => "EMAIL",
                 GcalEventReminderMethod::Popup => "DISPLAY",
+                GcalEventReminderMethod::Unknown(_) => return None,
             };
             let minutes = reminder.minutes?;
 
@@ -1249,13 +1299,13 @@ fn ical_utc(date_time: &str) -> Option<String> {
 }
 
 /// Projects a Google event status onto its STATUS value.
-fn status_to_ical(status: GcalEventStatus) -> String {
+fn status_to_ical(status: &GcalEventStatus) -> Option<String> {
     match status {
-        GcalEventStatus::Confirmed => "CONFIRMED",
-        GcalEventStatus::Tentative => "TENTATIVE",
-        GcalEventStatus::Cancelled => "CANCELLED",
+        GcalEventStatus::Confirmed => Some(String::from("CONFIRMED")),
+        GcalEventStatus::Tentative => Some(String::from("TENTATIVE")),
+        GcalEventStatus::Cancelled => Some(String::from("CANCELLED")),
+        GcalEventStatus::Unknown(_) => None,
     }
-    .to_string()
 }
 
 /// Reads a STATUS value back onto a Google event status.
@@ -1269,12 +1319,12 @@ fn status_from_ical(value: &str) -> Option<GcalEventStatus> {
 }
 
 /// Projects a Google transparency onto its TRANSP value.
-fn transparency_to_ical(transparency: GcalEventTransparency) -> String {
+fn transparency_to_ical(transparency: &GcalEventTransparency) -> Option<String> {
     match transparency {
-        GcalEventTransparency::Opaque => "OPAQUE",
-        GcalEventTransparency::Transparent => "TRANSPARENT",
+        GcalEventTransparency::Opaque => Some(String::from("OPAQUE")),
+        GcalEventTransparency::Transparent => Some(String::from("TRANSPARENT")),
+        GcalEventTransparency::Unknown(_) => None,
     }
-    .to_string()
 }
 
 /// Reads a TRANSP value back onto a Google transparency.
@@ -1289,9 +1339,9 @@ fn transparency_from_ical(value: &str) -> Option<GcalEventTransparency> {
 /// Projects a Google visibility onto its CLASS value.
 ///
 /// The default visibility is the absence of a CLASS, not a value.
-fn visibility_to_ical(visibility: GcalEventVisibility) -> Option<String> {
+fn visibility_to_ical(visibility: &GcalEventVisibility) -> Option<String> {
     match visibility {
-        GcalEventVisibility::Default => None,
+        GcalEventVisibility::Default | GcalEventVisibility::Unknown(_) => None,
         GcalEventVisibility::Public => Some(String::from("PUBLIC")),
         GcalEventVisibility::Private => Some(String::from("PRIVATE")),
         GcalEventVisibility::Confidential => Some(String::from("CONFIDENTIAL")),
@@ -1330,8 +1380,8 @@ fn attendee_prop(attendee: &GcalEventAttendee) -> IcalProp<'static> {
         params.push(IcalParam::Cn(name.clone().into()));
     }
 
-    if let Some(status) = attendee.response_status {
-        params.push(IcalParam::PartStat(partstat_to_ical(status).into()));
+    if let Some(status) = attendee.response_status.as_ref().and_then(partstat_to_ical) {
+        params.push(IcalParam::PartStat(status.into()));
     }
 
     params.push(IcalParam::Role(
@@ -1398,14 +1448,14 @@ fn mailto(address: Option<&str>) -> String {
 }
 
 /// Projects a Google attendee response onto its PARTSTAT value.
-fn partstat_to_ical(status: GcalEventAttendeeResponseStatus) -> String {
+fn partstat_to_ical(status: &GcalEventAttendeeResponseStatus) -> Option<String> {
     match status {
-        GcalEventAttendeeResponseStatus::NeedsAction => "NEEDS-ACTION",
-        GcalEventAttendeeResponseStatus::Declined => "DECLINED",
-        GcalEventAttendeeResponseStatus::Tentative => "TENTATIVE",
-        GcalEventAttendeeResponseStatus::Accepted => "ACCEPTED",
+        GcalEventAttendeeResponseStatus::NeedsAction => Some(String::from("NEEDS-ACTION")),
+        GcalEventAttendeeResponseStatus::Declined => Some(String::from("DECLINED")),
+        GcalEventAttendeeResponseStatus::Tentative => Some(String::from("TENTATIVE")),
+        GcalEventAttendeeResponseStatus::Accepted => Some(String::from("ACCEPTED")),
+        GcalEventAttendeeResponseStatus::Unknown(_) => None,
     }
-    .to_string()
 }
 
 /// Reads a PARTSTAT value back onto a Google attendee response.
@@ -2360,8 +2410,8 @@ mod tests {
             request
                 .conference_solution_key
                 .as_ref()
-                .and_then(|key| key.solution_type),
-            Some(GcalConferenceSolutionType::HangoutsMeet)
+                .and_then(|key| key.solution_type.as_ref()),
+            Some(&GcalConferenceSolutionType::HangoutsMeet)
         );
         let id = request.request_id.clone().unwrap();
         assert!(id.starts_with("pimdir-"), "{id}");
@@ -3097,5 +3147,103 @@ mod tests {
             assert!(event.reminders.as_ref().unwrap().overrides.is_empty());
             assert!(stored(&event, EVENT_STASH_PREFIX).contains(trigger));
         }
+    }
+
+    #[test]
+    fn a_document_without_alarm_leaves_the_reminders_as_the_server_has_them() {
+        let popup = GcalEventReminder {
+            method: Some(GcalEventReminderMethod::Popup),
+            minutes: Some(10),
+        };
+        let reminders = |use_default: bool, overrides: &[GcalEventReminder]| {
+            Some(GcalEventReminders {
+                use_default: Some(use_default),
+                overrides: overrides.to_vec(),
+            })
+        };
+        let silent = CALENDAR.replace(
+            "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\n",
+            "",
+        );
+
+        // NOTE: turned off on the server, the reminders stay off through
+        // the round trip of a document that never held an alarm.
+        let mut current = event();
+        current.reminders = reminders(false, &[]);
+        let document = current.to_ical();
+        assert!(!document.contains("VALARM"), "{document}");
+
+        let merged = GcalEvent::from_ical(document.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.reminders, reminders(false, &[]));
+
+        // NOTE: on the calendar's defaults, they stay on them.
+        current.reminders = reminders(true, &[]);
+        let merged = GcalEvent::from_ical(silent.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.reminders, reminders(true, &[]));
+
+        // NOTE: an alarm taken out of the document is a reminder taken
+        // off the event, not the calendar's defaults coming back.
+        current.reminders = reminders(false, core::slice::from_ref(&popup));
+        let merged = GcalEvent::from_ical(silent.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.reminders, reminders(false, &[]));
+
+        // NOTE: an alarm in the document wins whatever the server holds.
+        for current_reminders in [reminders(true, &[]), reminders(false, &[]), None] {
+            current.reminders = current_reminders;
+            let merged = GcalEvent::from_ical(CALENDAR.as_bytes())
+                .unwrap()
+                .merge(&current);
+            let merged = merged.reminders.unwrap();
+            assert_eq!(merged.use_default, Some(false));
+            assert_eq!(merged.overrides[0].minutes, Some(15));
+        }
+    }
+
+    #[test]
+    fn a_value_this_crate_does_not_know_comes_from_the_server_copy() {
+        let unknown = || String::from("somethingNew");
+
+        let mut current = event();
+        current.status = Some(GcalEventStatus::Unknown(unknown()));
+        current.transparency = Some(GcalEventTransparency::Unknown(unknown()));
+        current.visibility = Some(GcalEventVisibility::Unknown(unknown()));
+        current.attendees[0].response_status =
+            Some(GcalEventAttendeeResponseStatus::Unknown(unknown()));
+        current
+            .reminders
+            .as_mut()
+            .unwrap()
+            .overrides
+            .push(GcalEventReminder {
+                method: Some(GcalEventReminderMethod::Unknown(unknown())),
+                minutes: Some(5),
+            });
+
+        let document = current.to_ical();
+        assert!(!document.contains("somethingNew"), "{document}");
+        assert!(!document.contains("STATUS"), "{document}");
+        assert_eq!(document.matches("BEGIN:VALARM").count(), 1, "{document}");
+
+        let merged = GcalEvent::from_ical(document.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.status, current.status);
+        assert_eq!(merged.transparency, current.transparency);
+        assert_eq!(merged.visibility, current.visibility);
+        assert_eq!(merged.attendees, current.attendees);
+        assert_eq!(merged.reminders, current.reminders);
+
+        // NOTE: a value the document does give wins.
+        let edited = document.replace("SEQUENCE:3\r\n", "SEQUENCE:3\r\nSTATUS:TENTATIVE\r\n");
+        let merged = GcalEvent::from_ical(edited.as_bytes())
+            .unwrap()
+            .merge(&current);
+        assert_eq!(merged.status, Some(GcalEventStatus::Tentative));
     }
 }

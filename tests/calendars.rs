@@ -208,3 +208,8 @@ fn spells_out_every_conference_solution_type() {
         );
     }
 }
+
+#[test]
+fn keeps_a_conference_solution_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalConferenceSolutionType>();
+}

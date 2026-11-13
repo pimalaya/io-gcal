@@ -6,6 +6,8 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/channels>
 
+use core::fmt;
+
 use alloc::{collections::BTreeMap, string::String};
 
 use serde::{Deserialize, Serialize};
@@ -13,7 +15,9 @@ use serde::{Deserialize, Serialize};
 pub mod stop;
 
 /// A notification channel watching a Calendar resource for changes.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
+///
+/// Its token is redacted in [`fmt::Debug`].
+#[derive(Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GcalChannel {
     /// Type of the resource, always `api#channel`.
@@ -49,12 +53,32 @@ pub struct GcalChannel {
     pub params: BTreeMap<String, String>,
 }
 
+impl fmt::Debug for GcalChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GcalChannel")
+            .field("kind", &self.kind)
+            .field("id", &self.id)
+            .field("resource_id", &self.resource_id)
+            .field("resource_uri", &self.resource_uri)
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("expiration", &self.expiration)
+            .field("channel_type", &self.channel_type)
+            .field("address", &self.address)
+            .field("payload", &self.payload)
+            .field("params", &self.params)
+            .finish()
+    }
+}
+
 /// Delivery mechanism of a notification channel.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub enum GcalChannelType {
     /// Notifications are delivered as HTTP requests to the channel
     /// address. The API also accepts the `webhook` spelling, which
     /// deserializes into this same variant.
     #[serde(rename = "web_hook", alias = "webhook")]
     WebHook,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }

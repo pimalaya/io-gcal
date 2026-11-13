@@ -18,7 +18,7 @@ The token encodes the shape of the listing that produced it, so most filters can
 
 The crate only puts `showDeleted` on the wire when it is true, so leaving `GcalEventsListParams::show_deleted` false is safe next to a sync token: the parameter is simply absent rather than explicitly false.
 
-A token eventually expires, and the server answers HTTP 410 rather than degrading silently. `GcalSendError::is_sync_token_expired` recognises it. The only correct recovery is to drop the stored token, clear the local copy and run a full baseline again: the server no longer knows what the consumer missed.
+A token eventually expires, and the server answers HTTP 410 rather than degrading silently. `GcalSendError::is_sync_token_expired` recognises it: every 410 is one, whatever reason it gives or none, but the 410 whose reason is `deleted`, which speaks of an event that is gone and not of the token. The only correct recovery is to drop the stored token, clear the local copy and run a full baseline again: the server no longer knows what the consumer missed.
 
 ## The push channel
 

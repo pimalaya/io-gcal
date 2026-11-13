@@ -81,3 +81,26 @@ fn accepts_both_spellings_of_the_webhook_type() {
         r#"{"type":"web_hook"}"#
     );
 }
+
+#[test]
+fn keeps_a_channel_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalChannelType>();
+}
+
+#[test]
+fn hides_the_token_of_a_channel_from_its_debug() {
+    let channel = GcalChannel {
+        id: Some(String::from("chan-1")),
+        token: Some(String::from("secret-token")),
+        ..Default::default()
+    };
+    let debug = format!("{channel:?}");
+
+    assert!(!debug.contains("secret-token"), "{debug}");
+    assert!(debug.contains("[REDACTED]"), "{debug}");
+    assert!(debug.contains("chan-1"), "{debug}");
+
+    // NOTE: an absent token stays told apart from a hidden one.
+    let debug = format!("{:?}", GcalChannel::default());
+    assert!(!debug.contains("[REDACTED]"), "{debug}");
+}

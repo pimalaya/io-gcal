@@ -980,3 +980,118 @@ fn spells_out_the_send_updates_values() {
 
     assert_eq!(written.len(), 3);
 }
+
+#[test]
+fn keeps_an_event_status_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventStatus>();
+}
+
+#[test]
+fn keeps_a_transparency_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventTransparency>();
+}
+
+#[test]
+fn keeps_a_visibility_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventVisibility>();
+}
+
+#[test]
+fn keeps_an_event_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventType>();
+}
+
+#[test]
+fn keeps_a_response_status_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventAttendeeResponseStatus>();
+}
+
+#[test]
+fn keeps_an_async_operation_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventAttendeeAsyncOperation>();
+}
+
+#[test]
+fn keeps_a_reminder_method_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventReminderMethod>();
+}
+
+#[test]
+fn keeps_a_birthday_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventBirthdayType>();
+}
+
+#[test]
+fn keeps_an_auto_decline_mode_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventAutoDeclineMode>();
+}
+
+#[test]
+fn keeps_a_chat_status_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventChatStatus>();
+}
+
+#[test]
+fn keeps_a_working_location_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalEventWorkingLocationType>();
+}
+
+#[test]
+fn keeps_a_conference_request_status_it_does_not_know() {
+    assert_keeps_unknown::<GcalConferenceRequestStatusCode>();
+}
+
+#[test]
+fn keeps_an_entry_point_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalEntryPointType>();
+}
+
+#[test]
+fn lists_a_page_holding_values_it_does_not_know() {
+    let event = r#"{"id":"ev2","status":"somethingNew","eventType":"somethingNew","visibility":"somethingNew","transparency":"somethingNew","start":{"date":"2026-08-10"},"end":{"date":"2026-08-11"},"attendees":[{"email":"jane@example.org","responseStatus":"somethingNew"}],"reminders":{"useDefault":false,"overrides":[{"method":"somethingNew","minutes":5}]},"conferenceData":{"entryPoints":[{"entryPointType":"somethingNew"}],"conferenceSolution":{"key":{"type":"somethingNew"}}}}"#;
+    let body = format!(r#"{{"accessRole":"somethingNew","items":[{EVENT},{event}]}}"#);
+    let mut coroutine = GcalEventsList::new(&auth(), "primary", &Default::default()).unwrap();
+    let (_, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", &body));
+    let out = ret.unwrap();
+
+    assert_eq!(out.response.items.len(), 2);
+    assert_eq!(out.response.items[0].summary.as_deref(), Some("Standup"));
+
+    // NOTE: a full update writes back what the listing read.
+    let mut coroutine = GcalEventUpdate::new(
+        &auth(),
+        "primary",
+        "ev2",
+        &out.response.items[1],
+        &Default::default(),
+        None,
+    )
+    .unwrap();
+    let (request, _) = expect_exchange(&mut coroutine, &json_response("200 OK", event));
+    let written: serde_json::Value = serde_json::from_str(request_body(&request)).unwrap();
+    let read: serde_json::Value = serde_json::from_str(event).unwrap();
+
+    assert_eq!(written, read);
+}
+
+#[test]
+fn hides_the_access_codes_of_an_entry_point_from_its_debug() {
+    let entry = GcalEntryPoint {
+        uri: Some(String::from("https://meet.example.org/abc")),
+        pin: Some(String::from("secret-pin")),
+        access_code: Some(String::from("secret-access")),
+        meeting_code: Some(String::from("secret-meeting")),
+        passcode: Some(String::from("secret-passcode")),
+        password: Some(String::from("secret-password")),
+        ..Default::default()
+    };
+    let debug = format!("{entry:?}");
+
+    assert!(!debug.contains("secret"), "{debug}");
+    assert!(debug.contains("https://meet.example.org/abc"), "{debug}");
+    assert_eq!(debug.matches("[REDACTED]").count(), 5, "{debug}");
+
+    // NOTE: an absent code stays told apart from a hidden one.
+    let debug = format!("{:?}", GcalEntryPoint::default());
+    assert!(!debug.contains("[REDACTED]"), "{debug}");
+}

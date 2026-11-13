@@ -7,6 +7,8 @@
 //!
 //! <https://developers.google.com/workspace/calendar/api/v3/reference/events>
 
+use core::fmt;
+
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
@@ -620,7 +622,9 @@ pub struct GcalConferenceRequestStatus {
 }
 
 /// One way of joining a conference.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
+///
+/// Its PIN and codes are redacted in [`fmt::Debug`].
+#[derive(Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GcalEntryPoint {
     /// The type of the entry point.
@@ -658,6 +662,25 @@ pub struct GcalEntryPoint {
     pub entry_point_features: Vec<String>,
 }
 
+impl fmt::Debug for GcalEntryPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted = |code: &Option<String>| code.as_ref().map(|_| "[REDACTED]");
+
+        f.debug_struct("GcalEntryPoint")
+            .field("entry_point_type", &self.entry_point_type)
+            .field("uri", &self.uri)
+            .field("label", &self.label)
+            .field("pin", &redacted(&self.pin))
+            .field("access_code", &redacted(&self.access_code))
+            .field("meeting_code", &redacted(&self.meeting_code))
+            .field("passcode", &redacted(&self.passcode))
+            .field("password", &redacted(&self.password))
+            .field("region_code", &self.region_code)
+            .field("entry_point_features", &self.entry_point_features)
+            .finish()
+    }
+}
+
 /// Additional solution-specific settings of a conference.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -677,7 +700,7 @@ pub struct GcalConferenceAddOnParameters {
 }
 
 /// Status of an event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventStatus {
     /// The event is confirmed. This is the default status.
@@ -689,10 +712,13 @@ pub enum GcalEventStatus {
     /// listing only returns cancelled events on an incremental sync or
     /// when deleted events are explicitly asked for.
     Cancelled,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Whether an event blocks time on the calendar.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventTransparency {
     /// The event blocks time, showing the user as busy. This is the
@@ -700,10 +726,13 @@ pub enum GcalEventTransparency {
     Opaque,
     /// The event does not block time, leaving the user available.
     Transparent,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Visibility of an event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventVisibility {
     /// The default visibility of the events of the calendar.
@@ -714,10 +743,13 @@ pub enum GcalEventVisibility {
     Private,
     /// Same as private, kept for compatibility.
     Confidential,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Specific type of an event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventType {
     /// An all-day event recurring every year.
@@ -732,10 +764,13 @@ pub enum GcalEventType {
     OutOfOffice,
     /// A working-location event.
     WorkingLocation,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The response of an attendee to an event invitation.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventAttendeeResponseStatus {
     /// The attendee has not responded yet, recommended for new events.
@@ -746,29 +781,38 @@ pub enum GcalEventAttendeeResponseStatus {
     Tentative,
     /// The attendee accepted the invitation.
     Accepted,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The asynchronous operation ongoing for an attendee.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventAttendeeAsyncOperation {
     /// The operation, such as listing the members of a large group, is
     /// still running.
     InProgress,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// How a reminder is delivered.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventReminderMethod {
     /// The reminder is sent by email.
     Email,
     /// The reminder is shown as a UI popup.
     Popup,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Type of birthday or special event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventBirthdayType {
     /// An anniversary other than a birthday, always linked to a
@@ -787,11 +831,14 @@ pub enum GcalEventBirthdayType {
     /// Serialized as `self`.
     #[serde(rename = "self")]
     Own,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Whether invitations overlapping a focus time or out of office event
 /// are declined automatically.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventAutoDeclineMode {
     /// No invitation is declined.
@@ -802,20 +849,26 @@ pub enum GcalEventAutoDeclineMode {
     /// Only the conflicting invitations arriving while the event is
     /// present are declined.
     DeclineOnlyNewConflictingInvitations,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The status a focus time event marks the user with in Chat.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventChatStatus {
     /// The user stays available.
     Available,
     /// The user is marked as do not disturb.
     DoNotDisturb,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Type of the working location of an event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEventWorkingLocationType {
     /// The user works at home.
@@ -824,10 +877,13 @@ pub enum GcalEventWorkingLocationType {
     OfficeLocation,
     /// The user works from a custom location.
     CustomLocation,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The current status of a conference create request.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalConferenceRequestStatusCode {
     /// The request is still being processed.
@@ -836,10 +892,13 @@ pub enum GcalConferenceRequestStatusCode {
     Success,
     /// The request failed and there is no entry point.
     Failure,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The type of a conference entry point.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalEntryPointType {
     /// Joining the conference over HTTP. A conference has at most one.
@@ -852,6 +911,9 @@ pub enum GcalEntryPointType {
     /// Further joining instructions, such as additional phone numbers.
     /// A conference has at most one, and it is not valid on its own.
     More,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// Who gets notified by email of an event change.

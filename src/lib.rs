@@ -88,7 +88,9 @@
 //!
 //! Request bodies take the whole resource by reference (`&GcalEvent`,
 //! `&GcalCalendar`), so a `Default` resource with a few fields set
-//! serializes cleanly. Enum-valued wire strings are typed enums; the
+//! serializes cleanly. Enum-valued wire strings are typed enums, each
+//! with an `Unknown` variant keeping a value the reference does not
+//! list yet, so that it reads and is written back as it came; the
 //! labels the reference leaves open, such as the features of a
 //! conference entry point, stay strings. List methods take borrowed
 //! `*Params` structs flattened into query pairs by

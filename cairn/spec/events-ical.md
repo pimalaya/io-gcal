@@ -6,7 +6,7 @@ status: current
 
 # Events as iCalendar
 
-The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built and about which alarms become reminders; the rest of the projection is not written down yet.
+The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built, about which alarms become reminders and about what a merge keeps of the server copy; the rest of the projection is not written down yet.
 
 ### Requirement: Every event read has an end
 `GcalEvent::from_ical` SHALL give Google an end for every VEVENT it accepts: its DTEND, else its DATE-TIME or DATE start shifted by its DURATION, else the end RFC 5545 3.6.1 implies, the start itself after a DATE-TIME start and the next day after a DATE one. The end SHALL keep the start's zone and shape. It SHALL refuse with `NoEnd` only an end the document gives and Google cannot read: a floating DTEND, a negative DURATION, a DURATION with a time part after a DATE start.
@@ -71,3 +71,19 @@ A stored line that is no content line SHALL be left out of the document. Among t
 
 ### Requirement: An alarm Google cannot hold stays in the stash
 `GcalEvent::from_ical` SHALL read a VALARM as a reminder override only when its action is DISPLAY or EMAIL and its trigger is a negative duration of whole minutes, four weeks at most. Any other alarm SHALL be stashed whole, one whose trigger is too large to count in seconds included.
+
+### Requirement: A document without alarm leaves the reminders as the server has them
+`GcalEvent::to_ical` SHALL write a VALARM for each reminder override of an event that is off the defaults of its calendar, and none otherwise: an event on the defaults and an event with its reminders turned off both project to no VALARM, and no property tells them apart. `GcalEvent::merge` SHALL therefore read a document holding no VALARM Google models as saying nothing of `useDefault`, and keep the one of the server copy: the defaults stay on, reminders turned off stay off, and overrides the document no longer holds are removed without the defaults coming back. A document holding such a VALARM SHALL set the overrides whatever the server copy says. `GcalEvent::from_ical` alone, with no server copy to merge onto, SHALL put an event without VALARM on the defaults of its calendar.
+
+#### Scenario: Reminders turned off
+- GIVEN an event whose server copy says `useDefault: false` with no override
+- WHEN it is projected, edited by a client that keeps only what RFC 5545 defines, read back and merged onto the server copy
+- THEN the event written still says `useDefault: false` with no override
+
+#### Scenario: The last alarm removed
+- GIVEN an event with one popup override, whose document a client removes the VALARM from
+- WHEN the document is read back and merged onto the server copy
+- THEN the event written says `useDefault: false` with no override
+
+### Requirement: A value this crate does not know comes from the server copy
+A status, a transparency, a visibility, the response of an attendee or the method of a reminder that reads as `Unknown` SHALL project to no line, parameter or VALARM. `GcalEvent::merge` SHALL take it from the server copy when the document gives none in its place: the status, transparency and visibility of the event, the response of the attendee of the same address, and every reminder override whose method is unknown.

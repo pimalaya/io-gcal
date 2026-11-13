@@ -4,13 +4,15 @@
 
 mod common;
 
+use core::time::Duration;
+
 use common::*;
 use io_gcal::v3::{
     rest::{
         calendars::{delete::GcalCalendarDelete, get::GcalCalendarGet},
         colors::get::GcalColorsGet,
     },
-    send::{GCAL_API_BASE, GcalSendError, parse_api_error},
+    send::{GCAL_API_BASE, GcalApiError, GcalSendError, parse_api_error},
 };
 
 #[test]
@@ -162,20 +164,154 @@ fn flags_the_transient_statuses_as_retryable() {
         let (_, message) = parse_api_error(status, b"");
         assert_eq!(message, "unknown Calendar API error");
 
-        let err = GcalSendError::Api {
+        let err = GcalSendError::Api(GcalApiError {
             status,
             message: message.clone(),
-        };
+            ..Default::default()
+        });
         assert!(err.is_retryable(), "{status} should be retryable");
         assert!(!err.is_sync_token_expired());
     }
 
     for status in [400, 401, 403, 404, 409, 410] {
-        let err = GcalSendError::Api {
+        let err = GcalSendError::Api(GcalApiError {
             status,
             message: String::from("nope"),
-        };
+            ..Default::default()
+        });
         assert!(!err.is_retryable(), "{status} should not be retryable");
+    }
+}
+
+#[test]
+fn flags_a_rate_limit_reason_as_retryable() {
+    let err = api_error(
+        "403 Forbidden",
+        &[],
+        r#"{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"domain":"usageLimits","reason":"rateLimitExceeded","message":"Rate Limit Exceeded"}],"status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"}]}}"#,
+    );
+    let api = err.api().unwrap();
+
+    assert_eq!(api.reasons, ["rateLimitExceeded"]);
+    assert_eq!(api.google_status.as_deref(), Some("PERMISSION_DENIED"));
+    assert_eq!(api.detail_reasons, ["RATE_LIMIT_EXCEEDED"]);
+    assert!(api.has_reason("rateLimitExceeded"));
+    assert!(err.is_rate_limited());
+    assert!(err.is_retryable());
+    assert!(err.to_string().contains("HTTP 403: Rate Limit Exceeded"));
+}
+
+#[test]
+fn tells_a_rate_limit_from_another_refusal() {
+    let error = |code: u16, reason: &str, status: &str| {
+        GcalApiError::parse(
+            code,
+            format!(
+                r#"{{"error":{{"code":{code},"message":"no","errors":[{{"reason":"{reason}"}}],"status":"{status}"}}}}"#
+            )
+            .as_bytes(),
+        )
+    };
+
+    assert!(error(403, "userRateLimitExceeded", "PERMISSION_DENIED").is_rate_limited());
+    assert!(error(403, "quotaExceeded", "PERMISSION_DENIED").is_rate_limited());
+    assert!(error(400, "badRequest", "RESOURCE_EXHAUSTED").is_rate_limited());
+    assert!(error(429, "badRequest", "UNKNOWN").is_rate_limited());
+
+    // NOTE: waiting does not lift the daily quota.
+    let daily = error(403, "dailyLimitExceeded", "PERMISSION_DENIED");
+    assert!(daily.has_reason("dailyLimitExceeded"));
+    assert!(!daily.is_rate_limited());
+    assert!(!daily.is_retryable());
+
+    let denied = error(403, "insufficientPermissions", "PERMISSION_DENIED");
+    assert!(!denied.is_rate_limited());
+
+    let missing = error(404, "notFound", "NOT_FOUND");
+    assert!(missing.is_not_found());
+    assert!(!missing.is_retryable());
+}
+
+#[test]
+fn tells_a_deleted_resource_from_an_expired_sync_token() {
+    let gone = |reason: &str| {
+        let body = format!(
+            r#"{{"error":{{"code":410,"message":"Gone","errors":[{{"domain":"global","reason":"{reason}","message":"Gone"}}]}}}}"#
+        );
+        api_error("410 Gone", &[], &body)
+    };
+
+    assert!(!gone("deleted").is_sync_token_expired());
+
+    // NOTE: every other 410 reads as an expired token, a reason this
+    // crate does not know and no reason at all included: a new baseline
+    // loses nothing, a missed expiry stalls the sync for good.
+    for reason in ["fullSyncRequired", "updatedMinTooLongAgo", "somethingNew"] {
+        assert!(gone(reason).is_sync_token_expired(), "{reason}");
+    }
+
+    assert!(api_error("410 Gone", &[], "").is_sync_token_expired());
+    assert!(!api_error("404 Not Found", &[], "").is_sync_token_expired());
+}
+
+#[test]
+fn carries_the_delay_of_the_retry_after_header() {
+    let err = api_error("429 Too Many Requests", &[("Retry-After", "120")], "busy");
+
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(120)));
+}
+
+#[test]
+fn carries_the_delay_of_the_envelope() {
+    let body = r#"{"error":{"code":429,"message":"busy","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"1.5s"}]}}"#;
+    let err = api_error("429 Too Many Requests", &[], body);
+
+    assert_eq!(err.retry_after(), Some(Duration::from_millis(1500)));
+    assert_eq!(err.api().unwrap().detail_reasons, ["RATE_LIMIT_EXCEEDED"]);
+
+    // NOTE: the header wins over the envelope.
+    let err = api_error("429 Too Many Requests", &[("Retry-After", "7")], body);
+    assert_eq!(err.retry_after(), Some(Duration::from_secs(7)));
+}
+
+#[test]
+fn reads_no_delay_out_of_a_date_or_a_malformed_value() {
+    for value in ["Fri, 13 Nov 2026 12:00:00 GMT", "-5", "+5", "soon", ""] {
+        let err = api_error("503 Service Unavailable", &[("Retry-After", value)], "");
+        assert_eq!(err.retry_after(), None, "got a delay out of {value:?}");
+    }
+
+    let err = api_error("503 Service Unavailable", &[], "");
+    assert_eq!(err.retry_after(), None);
+
+    // NOTE: a delay of another shape must not cost the envelope.
+    let body =
+        r#"{"error":{"code":429,"message":"busy","details":[{"retryDelay":{"seconds":30}}]}}"#;
+    let err = api_error("400 Bad Request", &[], body);
+    assert_eq!(err.status(), Some(429));
+    assert_eq!(err.retry_after(), None);
+}
+
+#[test]
+fn reports_whether_a_refusal_leaves_the_connection_reusable() {
+    let err = api_error("404 Not Found", &[("Connection", "keep-alive")], "");
+    assert!(err.api().unwrap().keep_alive);
+    assert!(err.is_not_found());
+
+    let err = api_error("404 Not Found", &[("Connection", "close")], "");
+    assert!(!err.api().unwrap().keep_alive);
+}
+
+/// Runs an exchange answered by a non-2xx response and returns its
+/// error.
+fn api_error(status: &str, headers: &[(&str, &str)], body: &str) -> GcalSendError {
+    let response = http_response(status, headers, body);
+    let mut coroutine = GcalCalendarGet::new(&auth(), "primary").unwrap();
+    let (_, ret) = expect_exchange(&mut coroutine, &response);
+
+    match ret {
+        Err(err) => err,
+        Ok(_) => panic!("expected an API error"),
     }
 }
 

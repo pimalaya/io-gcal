@@ -73,7 +73,7 @@ pub struct GcalConferenceProperties {
 }
 
 /// A conference provider backing a conference on an event.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalConferenceSolutionType {
     /// Hangouts for consumers, deprecated: existing events may still
@@ -87,6 +87,9 @@ pub enum GcalConferenceSolutionType {
     HangoutsMeet,
     /// A third-party conference provider, added on.
     AddOn,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The event labels defined on a calendar.

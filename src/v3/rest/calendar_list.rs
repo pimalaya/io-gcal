@@ -154,7 +154,7 @@ pub struct GcalCalendarNotification {
 }
 
 /// What a calendar notification is about.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalCalendarNotificationType {
     /// A new event was put on the calendar.
@@ -167,4 +167,7 @@ pub enum GcalCalendarNotificationType {
     EventResponse,
     /// The morning agenda of the events of the day.
     Agenda,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }

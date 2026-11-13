@@ -60,8 +60,8 @@ fn lists_the_calendar_list() {
             .notification_settings
             .as_ref()
             .and_then(|settings| settings.notifications.first())
-            .and_then(|notification| notification.notification_type),
-        Some(GcalCalendarNotificationType::EventCreation)
+            .and_then(|notification| notification.notification_type.as_ref()),
+        Some(&GcalCalendarNotificationType::EventCreation)
     );
     assert_eq!(out.response.next_sync_token.as_deref(), Some("s1"));
 
@@ -315,4 +315,28 @@ fn spells_out_every_notification_type() {
             "{wire}"
         );
     }
+}
+
+#[test]
+fn keeps_a_notification_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalCalendarNotificationType>();
+}
+
+#[test]
+fn lists_the_calendars_past_an_access_role_it_does_not_know() {
+    let entry = r#"{"id":"new@group.calendar.google.com","accessRole":"somethingNew","notificationSettings":{"notifications":[{"type":"somethingNew","method":"somethingNew"}]}}"#;
+    let body = format!(r#"{{"items":[{entry},{ENTRY}]}}"#);
+    let mut coroutine = GcalCalendarListList::new(&auth(), &Default::default()).unwrap();
+    let (_, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", &body));
+    let out = ret.unwrap();
+
+    assert_eq!(out.response.items.len(), 2);
+    assert_eq!(
+        out.response.items[1].access_role,
+        Some(GcalAccessRole::Owner)
+    );
+    assert_eq!(
+        serde_json::to_string(&out.response.items[0]).unwrap(),
+        entry
+    );
 }

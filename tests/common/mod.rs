@@ -18,6 +18,7 @@ use core::fmt::Debug;
 
 use io_gcal::coroutine::*;
 use io_http::rfc6750::bearer::HttpAuthBearer;
+use serde::{Serialize, de::DeserializeOwned};
 
 /// The bearer credential every offline test authenticates with.
 pub fn auth() -> HttpAuthBearer {
@@ -134,4 +135,17 @@ pub fn assert_query(request: &str, pair: &str) {
 pub fn assert_no_query(request: &str, key: &str) {
     let line = request_line(request);
     assert!(!line.contains(key), "unexpected `{key}` in `{line}`");
+}
+
+/// Asserts that an enum reads a value it does not know, and writes it
+/// back as it read it.
+pub fn assert_keeps_unknown<T>()
+where
+    T: DeserializeOwned + Serialize + Debug,
+{
+    let json = r#""somethingNew""#;
+    let value: T = serde_json::from_str(json).expect("an unknown value should read");
+
+    assert_eq!(format!("{value:?}"), r#"Unknown("somethingNew")"#);
+    assert_eq!(serde_json::to_string(&value).unwrap(), json);
 }

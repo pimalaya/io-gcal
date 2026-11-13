@@ -5,7 +5,7 @@
 //!
 //! Calendar API reference: <https://developers.google.com/workspace/calendar/api/v3/reference>.
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, time::Duration};
 
 use alloc::{
     format,
@@ -24,6 +24,7 @@ use io_http::{
 };
 use log::{debug, trace};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use thiserror::Error;
 use url::Url;
 
@@ -66,42 +67,174 @@ pub enum GcalSendError {
     #[error("Invalid Calendar request: {0}")]
     InvalidRequest(String),
     /// Calendar returned a non-2xx status with its error envelope.
-    #[error("Calendar API returned HTTP {status}: {message}")]
-    Api {
-        /// The effective status code, from the envelope when present.
-        status: u16,
-        /// The error message, from the envelope or the raw body.
-        message: String,
-    },
+    #[error("{0}")]
+    Api(GcalApiError),
     /// The server answered with a redirect, which is never followed.
     #[error("Calendar server returned an unexpected redirect")]
     UnexpectedRedirect,
 }
 
 impl GcalSendError {
-    /// Returns the HTTP status code when the error is an API error.
-    pub fn status(&self) -> Option<u16> {
+    /// Returns the API error when Calendar answered with a non-2xx
+    /// status.
+    pub fn api(&self) -> Option<&GcalApiError> {
         match self {
-            Self::Api { status, .. } => Some(*status),
+            Self::Api(err) => Some(err),
             _ => None,
         }
     }
 
-    /// Whether the error is transient (429 or 5xx) and worth retrying.
-    pub fn is_retryable(&self) -> bool {
-        matches!(self.status(), Some(429 | 500 | 502 | 503 | 504))
+    /// Returns the HTTP status code when the error is an API error.
+    pub fn status(&self) -> Option<u16> {
+        self.api().map(|err| err.status)
     }
 
-    /// Whether the error is an expired or invalid sync token (410),
-    /// which callers recover from by re-baselining a full listing.
+    /// Returns how long the server asked to wait before a retry
+    /// ([`GcalApiError::retry_after`]).
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.api().and_then(|err| err.retry_after)
+    }
+
+    /// Whether the error is an API error worth retrying later
+    /// ([`GcalApiError::is_retryable`]).
+    pub fn is_retryable(&self) -> bool {
+        self.api().is_some_and(GcalApiError::is_retryable)
+    }
+
+    /// Whether the error is a rate limit answer
+    /// ([`GcalApiError::is_rate_limited`]).
+    pub fn is_rate_limited(&self) -> bool {
+        self.api().is_some_and(GcalApiError::is_rate_limited)
+    }
+
+    /// Whether the target of the request does not exist (404).
+    pub fn is_not_found(&self) -> bool {
+        self.status() == Some(404)
+    }
+
+    /// Whether the error is an expired or invalid sync token
+    /// ([`GcalApiError::is_sync_token_expired`]), which callers recover
+    /// from by re-baselining a full listing.
     pub fn is_sync_token_expired(&self) -> bool {
-        matches!(self.status(), Some(410))
+        self.api().is_some_and(GcalApiError::is_sync_token_expired)
     }
 
     /// Whether the error is a failed entity tag guard (412), meaning
     /// the resource moved since the etag the write carried was read.
     pub fn is_precondition_failed(&self) -> bool {
         matches!(self.status(), Some(412))
+    }
+}
+
+/// The Calendar error envelope, read from a non-2xx answer.
+///
+/// Beside its code and message, the envelope lists reasons in
+/// `errors[]` and `details[]` and a canonical `status`: they are kept
+/// so callers match on codes rather than on the message text.
+#[derive(Debug, Clone, Default, Eq, PartialEq, Error)]
+#[error("Calendar API returned HTTP {status}: {message}")]
+pub struct GcalApiError {
+    /// The effective status code: `error.code` when present, the HTTP
+    /// status otherwise.
+    pub status: u16,
+    /// The error message, from the envelope or the raw body.
+    pub message: String,
+    /// The reasons of `error.errors[]`, in order, such as `notFound`,
+    /// `rateLimitExceeded`, `fullSyncRequired` or `conditionNotMet`.
+    pub reasons: Vec<String>,
+    /// The canonical status of `error.status`, such as `NOT_FOUND`,
+    /// `PERMISSION_DENIED` or `RESOURCE_EXHAUSTED`.
+    pub google_status: Option<String>,
+    /// The reasons of `error.details[]` (`google.rpc.ErrorInfo`), such
+    /// as `RATE_LIMIT_EXCEEDED`.
+    pub detail_reasons: Vec<String>,
+    /// How long the server asked to wait before a retry: the
+    /// `Retry-After` header in its seconds form, else the delay of
+    /// `error.details[]` (`google.rpc.RetryInfo`).
+    pub retry_after: Option<Duration>,
+    /// Whether the server allows reusing the TCP/TLS connection.
+    pub keep_alive: bool,
+}
+
+impl GcalApiError {
+    /// Reads the Calendar error envelope out of a non-2xx body, falling
+    /// back to the raw body as message.
+    ///
+    /// The body tells neither the `Retry-After` header nor the
+    /// connection reuse: the exchange fills those in.
+    pub fn parse(http_status: u16, body: &[u8]) -> Self {
+        let (status, message) = parse_api_error(http_status, body);
+        let mut err = Self {
+            status,
+            message,
+            ..Default::default()
+        };
+
+        if let Ok(envelope) = serde_json::from_slice::<ErrorEnvelope>(body) {
+            let error = envelope.error;
+            err.reasons = error.errors.into_iter().filter_map(|e| e.reason).collect();
+            err.google_status = error.status;
+            err.retry_after = error
+                .details
+                .iter()
+                .find_map(|d| d.retry_delay.as_ref()?.as_str().and_then(parse_delay));
+            err.detail_reasons = error.details.into_iter().filter_map(|d| d.reason).collect();
+        }
+
+        err
+    }
+
+    /// Whether `reason` is one of [`Self::reasons`] or
+    /// [`Self::detail_reasons`].
+    pub fn has_reason(&self, reason: &str) -> bool {
+        self.reasons
+            .iter()
+            .chain(&self.detail_reasons)
+            .any(|r| r == reason)
+    }
+
+    /// Whether Google throttled the request: a 429, a
+    /// `RESOURCE_EXHAUSTED` status, or a 403 whose reason is
+    /// `rateLimitExceeded`, `userRateLimitExceeded`, `quotaExceeded` or
+    /// `RATE_LIMIT_EXCEEDED`.
+    ///
+    /// The daily quota (`dailyLimitExceeded`) is not a rate limit:
+    /// waiting a minute does not lift it.
+    pub fn is_rate_limited(&self) -> bool {
+        if self.status == 429 || self.google_status.as_deref() == Some("RESOURCE_EXHAUSTED") {
+            return true;
+        }
+
+        self.status == 403
+            && [
+                "rateLimitExceeded",
+                "userRateLimitExceeded",
+                "quotaExceeded",
+                "RATE_LIMIT_EXCEEDED",
+            ]
+            .iter()
+            .any(|reason| self.has_reason(reason))
+    }
+
+    /// Whether the request is worth sending again later: rate limited
+    /// ([`Self::is_rate_limited`]) or a transient 5xx.
+    pub fn is_retryable(&self) -> bool {
+        self.is_rate_limited() || matches!(self.status, 500 | 502 | 503 | 504)
+    }
+
+    /// Whether the target of the request does not exist (404).
+    pub fn is_not_found(&self) -> bool {
+        self.status == 404
+    }
+
+    /// Whether the sync token of a listing expired: any 410 but the one
+    /// whose reason is `deleted`, which speaks of a resource that is
+    /// gone and not of the token.
+    ///
+    /// A 410 giving a reason this crate does not know, or none, reads
+    /// as expired: a new baseline loses nothing.
+    pub fn is_sync_token_expired(&self) -> bool {
+        self.status == 410 && !self.has_reason("deleted")
     }
 }
 
@@ -348,8 +481,13 @@ impl<T: DeserializeOwned> GcalCoroutine for GcalSend<T> {
                             }
                         }
                     } else {
-                        let (status, message) = parse_api_error(*response.status, &response.body);
-                        GcalCoroutineState::Complete(Err(GcalSendError::Api { status, message }))
+                        let mut err = GcalApiError::parse(*response.status, &response.body);
+                        let delay = response.header("retry-after").and_then(parse_delay);
+
+                        err.retry_after = delay.or(err.retry_after);
+                        err.keep_alive = keep_alive;
+
+                        GcalCoroutineState::Complete(Err(GcalSendError::Api(err)))
                     }
                 }
             },
@@ -370,6 +508,39 @@ struct ErrorEnvelope {
 struct ErrorBody {
     code: Option<u16>,
     message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ErrorItem>,
+    status: Option<String>,
+    #[serde(default)]
+    details: Vec<ErrorItem>,
+}
+
+/// An item of `error.errors[]` or `error.details[]`, of which only the
+/// reason and the retry delay are kept.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorItem {
+    reason: Option<String>,
+    // NOTE: read loosely, so an unexpected shape cannot fail the envelope.
+    retry_delay: Option<Value>,
+}
+
+/// Reads a delay in seconds: the `Retry-After` header (`120`) or the
+/// `retryDelay` of the envelope (`1.5s`). A date reads as none.
+fn parse_delay(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    let value = value.strip_suffix('s').unwrap_or(value);
+    let (secs, frac) = value.split_once('.').unwrap_or((value, ""));
+
+    if secs.is_empty() || !secs.chars().chain(frac.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let secs = secs.parse().ok()?;
+    let nanos = frac.bytes().chain([b'0'; 9]).take(9);
+    let nanos = nanos.fold(0, |nanos, digit| nanos * 10 + u32::from(digit - b'0'));
+
+    Some(Duration::new(secs, nanos))
 }
 
 /// Builds the Calendar API URL of a path from its segments.

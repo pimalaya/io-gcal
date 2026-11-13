@@ -300,3 +300,13 @@ fn spells_out_every_scope_type() {
         );
     }
 }
+
+#[test]
+fn keeps_an_access_role_it_does_not_know() {
+    assert_keeps_unknown::<GcalAccessRole>();
+}
+
+#[test]
+fn keeps_a_scope_type_it_does_not_know() {
+    assert_keeps_unknown::<GcalAclScopeType>();
+}

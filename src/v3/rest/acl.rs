@@ -75,7 +75,7 @@ pub struct GcalAclScope {
 }
 
 /// The kind of grantee an ACL rule scope designates.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalAclScopeType {
     /// The public scope, granting the role to everyone.
@@ -86,6 +86,9 @@ pub enum GcalAclScopeType {
     Group,
     /// A whole domain, identified by name.
     Domain,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 /// The level of access a user has on a calendar.
@@ -95,7 +98,7 @@ pub enum GcalAclScopeType {
 /// filter. [`GcalAccessRole::None`] only ever appears on an ACL rule
 /// and on the access role of an event listing, and is rejected as a
 /// `minAccessRole`.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum GcalAccessRole {
     /// No access at all.
@@ -111,4 +114,7 @@ pub enum GcalAccessRole {
     /// Manager access: everything a writer can do, plus modifying the
     /// access levels of other users.
     Owner,
+    /// A value this crate does not know, kept as the API spells it.
+    #[serde(untagged)]
+    Unknown(String),
 }
