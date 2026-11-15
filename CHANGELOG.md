@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-15
+
 ### Added
 
 - Added `GcalEventSeries` (requires `ical` feature), a series document read as its master and its instances: `from_ical` gives the master `GcalEvent::from_ical` reads, its EXDATEs among its recurrence lines, each override read as a document holding it alone, and `left_out`, what Google cannot hold.
@@ -154,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.5.0..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.5.1..HEAD
+[0.5.1]: https://github.com/pimalaya/io-gcal/compare/v0.5.0..v0.5.1
 [0.5.0]: https://github.com/pimalaya/io-gcal/compare/v0.4.0..v0.5.0
 [0.4.0]: https://github.com/pimalaya/io-gcal/compare/v0.3.1..v0.4.0
 [0.3.1]: https://github.com/pimalaya/io-gcal/compare/v0.3.0..v0.3.1
