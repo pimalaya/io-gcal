@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalEvent::from_ical` reads the master alone, so a create or an import of a series dropped its overrides with no word. `GcalEvent::replaces` tells the listed instance an override replaces, by its original start as a date or an instant, and `GcalEvent::instance_window` gives the `timeMin` and `timeMax` of an `events.instances` listing holding it. `left_out` names an override with a RANGE, one whose RECURRENCE-ID does not read, one beside an event that is no series, and the units a full stash goes without, which fail no series.
 
+### Fixed
+
+- Fixed `GcalEvent::to_ical` and `to_ical_series` writing a zoned boundary in the zone of its calendar rather than its own (requires `ical` feature).
+
+  Google renders `dateTime` in the calendar's zone and names the event's own zone in `timeZone`, so a weekly event at 09:00 in Paris read from a calendar in UTC projected as `DTSTART:20270315T080000Z`, and a client expanded it at 10:00 in Paris after the daylight-saving change, where Google keeps 09:00. A `dateTime` in a third zone's offset was read as wall time in the named zone, hours off. A timed DTSTART, DTEND or RECURRENCE-ID whose `timeZone` names a zone other than UTC is now its wall time in that zone with its TZID (`DTSTART;TZID=Europe/Paris:20270315T090000`), whatever the offset; a zone the bundled database does not know keeps the instant in UTC.
+
 ## [0.5.0] - 2026-11-15
 
 ### Changed

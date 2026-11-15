@@ -35,8 +35,10 @@
 //!
 //! `created` and `updated` project onto CREATED and LAST-MODIFIED, but
 //! Google stamps them itself, so an incoming CREATED or LAST-MODIFIED is
-//! consumed rather than written. Every TZID the document names gets a
-//! VTIMEZONE, synthesized from the bundled time zone database.
+//! consumed rather than written. A timed boundary is written as the wall
+//! time of the zone Google names beside it, whatever offset its instant is
+//! rendered in, and every TZID the document names gets a VTIMEZONE, both
+//! from the bundled time zone database.
 
 use core::{fmt, mem::take, ptr};
 
@@ -556,8 +558,8 @@ impl GcalEvent {
             _ => projected.conference_data.take(),
         };
 
-        carry_display_zone(&mut projected.start, current.start.as_ref());
-        carry_display_zone(&mut projected.end, current.end.as_ref());
+        carry_zone(&mut projected.start, current.start.as_ref());
+        carry_zone(&mut projected.end, current.end.as_ref());
 
         let kept = current.reminders.as_ref();
 
@@ -856,20 +858,17 @@ fn sort_zones(
     }
 }
 
-/// Carries a boundary's display zone over from the server copy.
+/// Carries a boundary's zone over from the server copy.
 ///
-/// Google returns an absolute instant plus the calendar's display zone,
-/// which no iCalendar boundary expresses, so the projection emits the
-/// stamp alone and loses the zone. A series expands in the zone of its
-/// start, and would drift an hour after a daylight-saving change.
+/// A document holding a zoned series as UTC stamps, projected before
+/// boundaries kept their zone or rewritten so by a client, names no zone
+/// but UTC, and Google would expand the series there, an hour off after
+/// a daylight-saving change.
 ///
 /// Only a UTC-stamped instant may take the zone: the stamp already
 /// fixes the instant, so the label moves nothing, while relabelling an
 /// offset-less wall time would shift the event.
-fn carry_display_zone(
-    projected: &mut Option<GcalEventDateTime>,
-    current: Option<&GcalEventDateTime>,
-) {
+fn carry_zone(projected: &mut Option<GcalEventDateTime>, current: Option<&GcalEventDateTime>) {
     let Some(boundary) = projected else { return };
     let Some(zone) = current.and_then(|boundary| boundary.time_zone.as_deref()) else {
         return;
@@ -1298,10 +1297,10 @@ fn shifted(start: &GcalEventDateTime, duration: Span) -> Option<GcalEventDateTim
     })
 }
 
-/// Pushes a DTSTART or DTEND line for a Google boundary.
+/// Pushes a DTSTART, DTEND or RECURRENCE-ID line for a Google boundary.
 ///
-/// A `VALUE=DATE` property for an all-day one, a UTC stamp for a timed
-/// one carrying an offset, a `TZID` stamp for a named zone.
+/// A `VALUE=DATE` property for an all-day one, a `TZID` stamp for a timed
+/// one in a named zone, a UTC stamp otherwise.
 fn push_boundary(vevent: &mut IcalCst<'_>, kind: IcalPropKind, boundary: &GcalEventDateTime) {
     if let Some(date) = &boundary.date {
         let Some(stamp) = ical_date(date) else {
@@ -1323,13 +1322,13 @@ fn push_boundary(vevent: &mut IcalCst<'_>, kind: IcalPropKind, boundary: &GcalEv
     let zone = boundary.time_zone.as_deref();
     let named = zone.filter(|zone| !zone.eq_ignore_ascii_case("UTC"));
 
-    // NOTE: Google renders a zoned boundary in that zone's own offset,
-    // so the literal time is its wall time and keeps its TZID: a series
-    // expands in the zone of its start, and dropping the name would
-    // expand it in UTC and drift an hour across a daylight-saving change.
+    // NOTE: `timeZone` is the event's own zone, the one Google expands a
+    // series in, while `dateTime` is rendered in the calendar's zone (a
+    // `Z` in a calendar in UTC). Its wall time in the named zone keeps
+    // both the instant and the expansion: the instant alone would expand
+    // the series in UTC and drift an hour across a daylight-saving change.
     if let Some(zone) = named
-        && !is_utc_stamped(date_time)
-        && let Some(stamp) = ical_local(date_time)
+        && let Some(stamp) = wall_time(date_time, zone)
     {
         vevent.push(IcalProp {
             name: IcalPropName::Kind(kind),
@@ -1339,10 +1338,8 @@ fn push_boundary(vevent: &mut IcalCst<'_>, kind: IcalPropKind, boundary: &GcalEv
         return;
     }
 
-    // NOTE: Google returns a `Z`-stamped instant alongside a named
-    // `timeZone` whenever the event was written in UTC. That name is the
-    // display zone, not the stamp's wall time, so the instant wins:
-    // relabelling would shift it, and deriving wall time needs a database.
+    // NOTE: no zone but UTC, or one the database does not know and so
+    // cannot place the instant on its clock: the instant stays.
     if let Some(stamp) = ical_utc(date_time) {
         vevent.push(stamp_prop(kind, stamp));
         return;
@@ -1358,6 +1355,29 @@ fn push_boundary(vevent: &mut IcalCst<'_>, kind: IcalPropKind, boundary: &GcalEv
         };
         vevent.push(stamp_prop(kind, stamp));
     }
+}
+
+/// The wall time a timed boundary names in `zone`, as `YYYYMMDDTHHMMSS`.
+///
+/// A time without offset already is that wall time. One with an offset,
+/// `Z` included, is an instant, read on the zone's clock whatever that
+/// offset, so a zone the bundled database does not know gives `None`.
+fn wall_time(date_time: &str, zone: &str) -> Option<String> {
+    if !has_offset(date_time) {
+        return ical_local(date_time);
+    }
+
+    let instant = date_time.parse::<Timestamp>().ok()?;
+    let zone = TimeZone::get(zone).ok()?;
+    let zoned = instant.to_zoned(zone);
+    Some(zoned.strftime("%Y%m%dT%H%M%S").to_string())
+}
+
+/// Whether an RFC 3339 timestamp carries an offset, `Z` included.
+fn has_offset(date_time: &str) -> bool {
+    date_time
+        .rsplit_once('T')
+        .is_some_and(|(_, time)| time.contains(['Z', 'z', '+', '-']))
 }
 
 /// Whether an RFC 3339 timestamp is stamped in UTC.
@@ -1416,10 +1436,11 @@ fn ical_date(date: &str) -> Option<String> {
     (stamp.len() == 8).then_some(stamp)
 }
 
-/// An RFC 3339 timestamp to the iCalendar local `YYYYMMDDTHHMMSS`.
+/// An offset-less RFC 3339 timestamp to the iCalendar local
+/// `YYYYMMDDTHHMMSS`.
 ///
-/// Whatever offset it carries is dropped: the TZID parameter names the
-/// zone instead.
+/// An offset would be dropped rather than applied, so a time carrying one
+/// goes through [`wall_time`] or [`ical_utc`] instead.
 fn ical_local(date_time: &str) -> Option<String> {
     let (date, time) = date_time.split_once('T')?;
     let date = ical_date(date)?;
@@ -1811,6 +1832,8 @@ fn raw_component(component: &IcalCst<'_>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use ical::recur::instant::IcalRecurTimeline;
+
     use super::*;
 
     /// One of every managed shape, plus a property (CATEGORIES) and a
@@ -2319,34 +2342,32 @@ mod tests {
     }
 
     #[test]
-    fn an_update_carries_the_display_zone_over_so_a_series_does_not_drift() {
-        // NOTE: what the live API returns for a zoned recurring event:
-        // the instant in UTC, the zone as a separate label. The write
-        // must put the label back, or Google re-expands the series in
-        // UTC and shifts every occurrence after a daylight-saving change.
-        let zoned = |stamp: &str| {
-            Some(GcalEventDateTime {
-                date_time: Some(String::from(stamp)),
-                time_zone: Some(String::from("Europe/Paris")),
-                ..Default::default()
-            })
-        };
-
+    fn an_update_keeps_the_zone_so_a_series_does_not_drift() {
+        // NOTE: what the live API returns for a zoned recurring event in
+        // a calendar in UTC: the instant in UTC, the event's zone beside
+        // it. The write must keep the zone, or Google re-expands the
+        // series in UTC and shifts every occurrence after a
+        // daylight-saving change.
         let mut current = event();
-        current.start = zoned("2026-10-20T07:00:00Z");
-        current.end = zoned("2026-10-20T07:30:00Z");
+        current.start = paris("2026-10-20T07:00:00Z");
+        current.end = paris("2026-10-20T07:30:00Z");
 
         let merged = GcalEvent::from_ical(current.to_ical().as_bytes())
             .unwrap()
             .merge(&current);
 
-        let start = merged.start.as_ref().unwrap();
-        assert_eq!(start.date_time.as_deref(), Some("2026-10-20T07:00:00Z"));
+        for (merged, current) in [(&merged.start, &current.start), (&merged.end, &current.end)] {
+            let (merged, current) = (merged.as_ref().unwrap(), current.as_ref().unwrap());
+            assert_eq!(merged.time_zone.as_deref(), Some("Europe/Paris"));
+            assert_eq!(instant(merged).unwrap(), instant(current).unwrap());
+        }
+
+        // NOTE: a document holding the series as UTC stamps, projected
+        // before boundaries kept their zone, takes it from the server.
+        let stale = event().merge(&current);
+        let start = stale.start.as_ref().unwrap();
+        assert_eq!(start.date_time.as_deref(), Some("2026-08-14T09:00:00Z"));
         assert_eq!(start.time_zone.as_deref(), Some("Europe/Paris"));
-        assert_eq!(
-            merged.end.as_ref().unwrap().time_zone.as_deref(),
-            Some("Europe/Paris")
-        );
     }
 
     #[test]
@@ -2374,26 +2395,30 @@ mod tests {
     }
 
     #[test]
-    fn a_utc_stamp_keeps_its_instant_when_google_names_a_display_zone() {
-        // NOTE: what the live API returns for an event written in UTC:
-        // an absolute instant plus the calendar's display zone. Reading
-        // the literal time as that zone's wall time would shift it.
+    fn a_utc_stamp_keeps_its_instant_in_the_zone_google_names() {
+        // NOTE: what the live API returns from a calendar in UTC: the
+        // instant, the event's zone beside it. Reading the literal time
+        // as that zone's wall time would shift it; reading the instant on
+        // that zone's clock keeps it.
         let mut event = event();
-        event.start = Some(GcalEventDateTime {
-            date_time: Some(String::from("2026-08-14T09:00:00Z")),
-            time_zone: Some(String::from("Europe/Paris")),
-            ..Default::default()
-        });
-        event.end = Some(GcalEventDateTime {
-            date_time: Some(String::from("2026-08-14T10:00:00Z")),
-            time_zone: Some(String::from("Europe/Paris")),
-            ..Default::default()
-        });
+        event.start = paris("2026-08-14T09:00:00Z");
+        event.end = paris("2026-08-14T10:00:00Z");
 
         let ical = event.to_ical();
-        assert!(ical.contains("DTSTART:20260814T090000Z\r\n"), "{ical}");
-        assert!(ical.contains("DTEND:20260814T100000Z\r\n"), "{ical}");
-        assert!(!ical.contains("TZID"), "{ical}");
+        assert!(
+            ical.contains("DTSTART;TZID=Europe/Paris:20260814T110000\r\n"),
+            "{ical}"
+        );
+        assert!(
+            ical.contains("DTEND;TZID=Europe/Paris:20260814T120000\r\n"),
+            "{ical}"
+        );
+
+        let back = GcalEvent::from_ical(ical.as_bytes()).unwrap();
+        let start = back.start.as_ref().unwrap();
+        assert_eq!(start.time_zone.as_deref(), Some("Europe/Paris"));
+        let sent = event.start.as_ref().unwrap();
+        assert_eq!(instant(start).unwrap(), instant(sent).unwrap());
     }
 
     #[test]
@@ -2419,6 +2444,154 @@ mod tests {
             .unwrap();
         assert_eq!(start.date_time.as_deref(), Some("2026-08-14T09:00:00"));
         assert_eq!(start.time_zone.as_deref(), Some("Europe/Paris"));
+    }
+
+    /// A timed boundary in Europe/Paris, its instant spelled `date_time`.
+    fn paris(date_time: &str) -> Option<GcalEventDateTime> {
+        Some(GcalEventDateTime {
+            date_time: Some(String::from(date_time)),
+            time_zone: Some(String::from("Europe/Paris")),
+            ..Default::default()
+        })
+    }
+
+    /// A weekly series of four from 15 March 2027 at 09:00 in Paris, its
+    /// boundaries spelled `start` and `end`.
+    fn weekly(start: &str, end: &str) -> GcalEvent {
+        GcalEvent {
+            id: Some(String::from("w1")),
+            ical_uid: Some(String::from("weekly@x.org")),
+            start: paris(start),
+            end: paris(end),
+            recurrence: vec![String::from("RRULE:FREQ=WEEKLY;COUNT=4")],
+            ..Default::default()
+        }
+    }
+
+    /// The occurrences of `uid` a client expands from `document`, in UTC,
+    /// each saying whether an override placed it.
+    fn occurrences(document: &str, uid: &str) -> Vec<(String, bool)> {
+        let cst = IcalCst::parse(document.as_bytes()).unwrap();
+        let calendar = cst.decode();
+        let zones = tzdb::zones(&calendar.components, 2027);
+
+        IcalRecurTimeline::of_uid(&calendar.components, uid, &zones)
+            .expand(i64::MIN, i64::MAX)
+            .map(|occurrence| {
+                let start = Timestamp::from_second(occurrence.start).unwrap();
+                (start.to_string(), occurrence.over)
+            })
+            .collect()
+    }
+
+    /// What Google returns for the series from a calendar in UTC (a `Z`),
+    /// in New York (its offset) and in Paris: the instant rendered in the
+    /// calendar's zone, the event's own zone beside it.
+    #[test]
+    fn a_stamp_reads_as_wall_time_in_the_zone_google_names() {
+        for (start, end) in [
+            ("2027-03-15T08:00:00Z", "2027-03-15T09:00:00Z"),
+            ("2027-03-15T04:00:00-04:00", "2027-03-15T05:00:00-04:00"),
+            ("2027-03-15T09:00:00+01:00", "2027-03-15T10:00:00+01:00"),
+        ] {
+            let ical = weekly(start, end).to_ical();
+
+            for line in [
+                "DTSTART;TZID=Europe/Paris:20270315T090000\r\n",
+                "DTEND;TZID=Europe/Paris:20270315T100000\r\n",
+                "RRULE:FREQ=WEEKLY;COUNT=4\r\n",
+                "TZID:Europe/Paris\r\n",
+            ] {
+                assert!(ical.contains(line), "{start}: no {line:?} in:\n{ical}");
+            }
+
+            // NOTE: expanded as a client expands it, the series keeps
+            // 09:00 in Paris across the change of 28 March, as Google's
+            // own instances do.
+            assert_eq!(
+                occurrences(&ical, "weekly@x.org"),
+                [
+                    (String::from("2027-03-15T08:00:00Z"), false),
+                    (String::from("2027-03-22T08:00:00Z"), false),
+                    (String::from("2027-03-29T07:00:00Z"), false),
+                    (String::from("2027-04-05T07:00:00Z"), false),
+                ],
+                "{start}"
+            );
+        }
+    }
+
+    /// The series above with its 29 March occurrence moved to 11:00, both
+    /// as Google returns them from a calendar in UTC.
+    #[test]
+    fn an_override_names_its_occurrence_in_the_zone_of_its_series() {
+        let master = weekly("2027-03-15T08:00:00Z", "2027-03-15T09:00:00Z");
+        let exception = GcalEvent {
+            id: Some(String::from("w1_20270329T070000Z")),
+            ical_uid: Some(String::from("weekly@x.org")),
+            recurring_event_id: Some(String::from("w1")),
+            original_start_time: paris("2027-03-29T07:00:00Z"),
+            start: paris("2027-03-29T09:00:00Z"),
+            end: paris("2027-03-29T10:00:00Z"),
+            ..Default::default()
+        };
+
+        let document = master.to_ical_series(&[&exception]);
+
+        for line in [
+            "RECURRENCE-ID;TZID=Europe/Paris:20270329T090000\r\n",
+            "DTSTART;TZID=Europe/Paris:20270329T110000\r\n",
+        ] {
+            assert!(document.contains(line), "no {line:?} in:\n{document}");
+        }
+
+        // NOTE: the override takes the place of the occurrence it names
+        // rather than standing beside it.
+        assert_eq!(
+            occurrences(&document, "weekly@x.org"),
+            [
+                (String::from("2027-03-15T08:00:00Z"), false),
+                (String::from("2027-03-22T08:00:00Z"), false),
+                (String::from("2027-03-29T09:00:00Z"), true),
+                (String::from("2027-04-05T07:00:00Z"), false),
+            ]
+        );
+
+        let series = GcalEventSeries::from_ical(document.as_bytes()).unwrap();
+        let [instance] = series.instances.as_slice() else {
+            panic!("one instance: {:?}", series.instances);
+        };
+        assert!(instance.replaces(&exception), "{instance:?}");
+    }
+
+    /// A zone the bundled database does not know cannot place an instant
+    /// on its wall clock: the instant stays, in UTC. A time without offset
+    /// already is wall time there, and keeps its TZID.
+    #[test]
+    fn a_zone_the_database_does_not_know_keeps_the_instant() {
+        let at = |date_time: &str| GcalEvent {
+            start: Some(GcalEventDateTime {
+                date_time: Some(String::from(date_time)),
+                time_zone: Some(String::from("Mars/Olympus_Mons")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        for stamp in ["2027-03-15T08:00:00Z", "2027-03-15T10:00:00+02:00"] {
+            let ical = at(stamp).to_ical();
+            assert!(
+                ical.contains("DTSTART:20270315T080000Z\r\n"),
+                "{stamp}: {ical}"
+            );
+            assert!(!ical.contains("TZID"), "{stamp}: {ical}");
+        }
+
+        let ical = at("2027-03-15T10:00:00").to_ical();
+        assert!(
+            ical.contains("DTSTART;TZID=Mars/Olympus_Mons:20270315T100000\r\n"),
+            "{ical}"
+        );
     }
 
     #[test]

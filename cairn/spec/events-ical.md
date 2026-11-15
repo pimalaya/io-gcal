@@ -6,7 +6,7 @@ status: current
 
 # Events as iCalendar
 
-The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built, about which alarms become reminders, about what a merge keeps of the server copy and about how a series document is cut into its master and its instances; the rest of the projection is not written down yet.
+The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the zone a boundary is written in, about the stash of the lines it does not manage, about how the document is built, about which alarms become reminders, about what a merge keeps of the server copy and about how a series document is cut into its master and its instances; the rest of the projection is not written down yet.
 
 ### Requirement: Every event read has an end
 `GcalEvent::from_ical` SHALL give Google an end for every VEVENT it accepts: its DTEND, else its DATE-TIME or DATE start shifted by its DURATION, else the end RFC 5545 3.6.1 implies, the start itself after a DATE-TIME start and the next day after a DATE one. The end SHALL keep the start's zone and shape. It SHALL refuse with `NoEnd` only an end the document gives and Google cannot read: a floating DTEND, a negative DURATION, a DURATION with a time part after a DATE start.
@@ -28,6 +28,29 @@ The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) an
 - GIVEN a VEVENT with a timed DTSTART and no end
 - WHEN it is read, then written back
 - THEN the VEVENT holds neither DTEND nor DURATION
+
+### Requirement: A boundary is written in the zone Google names
+`GcalEvent::to_ical` and `to_ical_series` SHALL write a timed boundary (the DTSTART, the DTEND, and the RECURRENCE-ID an `originalStartTime` becomes) whose `timeZone` names a zone other than UTC as the wall time of that zone, under a TZID naming it: a `dateTime` carrying an offset, `Z` included, SHALL be read as an instant and placed on that zone's clock whatever the offset Google rendered it in, and a `dateTime` without one SHALL be taken as that wall time. A zone the bundled time zone database does not know SHALL keep the instant of a `dateTime` carrying an offset, written in UTC, and the wall time of one without, under its TZID. A boundary whose `timeZone` is UTC or absent SHALL be written in UTC when its `dateTime` carries an offset, and an all-day boundary as a DATE. An EXDATE or an RDATE SHALL be written as Google returns it, among the recurrence lines. `GcalEvent::merge` SHALL give a UTC-stamped boundary of the document the `timeZone` the server copy names, and leave every other boundary as the document gives it.
+
+#### Scenario: A series in Paris read from a calendar in UTC
+- GIVEN a weekly event of four whose start Google returns as `{"dateTime":"2027-03-15T08:00:00Z","timeZone":"Europe/Paris"}`
+- WHEN it is projected
+- THEN the VEVENT holds `DTSTART;TZID=Europe/Paris:20270315T090000` and its RRULE, the document defines Europe/Paris, and the series expands to 2027-03-29 at 09:00 in Paris, 07:00 UTC, as Google's `events.instances` lists it
+
+#### Scenario: The offset of a third zone
+- GIVEN the same start read from a calendar in New York, `{"dateTime":"2027-03-15T04:00:00-04:00","timeZone":"Europe/Paris"}`
+- WHEN it is projected
+- THEN the VEVENT holds `DTSTART;TZID=Europe/Paris:20270315T090000`
+
+#### Scenario: An override in the zone of its series
+- GIVEN that series and its instance whose `originalStartTime` Google returns as `{"dateTime":"2027-03-29T07:00:00Z","timeZone":"Europe/Paris"}`, moved to 11:00
+- WHEN both are projected as one series document
+- THEN the override holds `RECURRENCE-ID;TZID=Europe/Paris:20270329T090000`, takes the place of the third occurrence as a client expands the series, and is read back by `GcalEventSeries::from_ical` as an instance that replaces the listed one
+
+#### Scenario: A zone the database does not know
+- GIVEN a start of `{"dateTime":"2027-03-15T10:00:00+02:00","timeZone":"Mars/Olympus_Mons"}`
+- WHEN it is projected
+- THEN the VEVENT holds `DTSTART:20270315T080000Z` and no TZID
 
 ### Requirement: The stash holds logical lines
 `GcalEvent::from_ical` SHALL stash a property it does not manage as its logical line: its name, its parameters and its raw value, with no fold, no soft break, no line ending and no CR, one line per line feed of the stash. It SHALL stash a component it does not manage as its logical lines, from its BEGIN to its END. A recurrence line (RRULE, EXRULE, RDATE, EXDATE) SHALL reach `recurrence` as its logical line too. A line SHALL be stashed whatever its width: the stash is cut into extended properties of at most 1024 octets between any two characters, so a line wider than one runs over the next ones and reads back whole.
