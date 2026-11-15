@@ -683,6 +683,100 @@ fn lists_the_instances_of_a_series() {
     assert_query(&request, "maxResults=10");
 }
 
+/// A series with an EXDATE and an override, written as a caller writes
+/// it: the master imported, then the override merged onto the instance it
+/// replaces among those listed in its window, and updated.
+#[cfg(feature = "ical")]
+#[test]
+fn writes_a_series_with_its_instances() {
+    use io_gcal::v3::rest::events::ical::GcalEventSeries;
+
+    let document = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+        UID:series@x.org\r\nDTSTART;TZID=Europe/Paris:20261123T140000\r\n\
+        DTEND;TZID=Europe/Paris:20261123T150000\r\nRRULE:FREQ=DAILY;COUNT=4\r\n\
+        EXDATE;TZID=Europe/Paris:20261125T140000\r\nSUMMARY:Review\r\n\
+        END:VEVENT\r\nBEGIN:VEVENT\r\nUID:series@x.org\r\n\
+        RECURRENCE-ID;TZID=Europe/Paris:20261124T140000\r\n\
+        DTSTART;TZID=Europe/Paris:20261124T160000\r\n\
+        DTEND;TZID=Europe/Paris:20261124T170000\r\nSUMMARY:Review\r\n\
+        END:VEVENT\r\nEND:VCALENDAR\r\n";
+    let series = GcalEventSeries::from_ical(document.as_bytes()).unwrap();
+
+    let mut coroutine =
+        GcalEventImport::new(&auth(), "primary", &series.master, &Default::default()).unwrap();
+    let imported = json_response("200 OK", r#"{"id":"m1","iCalUID":"series@x.org"}"#);
+    let (request, ret) = expect_exchange(&mut coroutine, &imported);
+    let master = ret.unwrap().response;
+    assert!(
+        request_body(&request).contains(r#""EXDATE;TZID=Europe/Paris:20261125T140000""#),
+        "got: {request}"
+    );
+
+    let instance = |day: &str, etag: &str| {
+        format!(
+            r#"{{"id":"m1_202611{day}T130000Z","etag":"\"{etag}\"","recurringEventId":"m1","colorId":"5","originalStartTime":{{"dateTime":"2026-11-{day}T14:00:00+01:00","timeZone":"Europe/Paris"}},"start":{{"dateTime":"2026-11-{day}T14:00:00+01:00","timeZone":"Europe/Paris"}},"end":{{"dateTime":"2026-11-{day}T15:00:00+01:00","timeZone":"Europe/Paris"}}}}"#
+        )
+    };
+    let listing = format!(
+        r#"{{"items":[{},{},{}]}}"#,
+        instance("23", "e1"),
+        instance("24", "e2"),
+        instance("26", "e4")
+    );
+
+    let mut requests = Vec::new();
+    for instance in &series.instances {
+        let (time_min, time_max) = instance.instance_window().unwrap();
+        let params = GcalEventInstancesParams {
+            time_min: Some(&time_min),
+            time_max: Some(&time_max),
+            ..Default::default()
+        };
+        let mut coroutine =
+            GcalEventInstances::new(&auth(), "primary", master.id.as_deref().unwrap(), &params)
+                .unwrap();
+        let (_, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", &listing));
+        let listed = ret.unwrap().response.items;
+
+        let current = listed
+            .iter()
+            .find(|listed| instance.replaces(listed))
+            .unwrap_or_else(|| panic!("no instance for {instance:?}"));
+        let merged = instance.clone().merge(current);
+        let mut coroutine = GcalEventUpdate::new(
+            &auth(),
+            "primary",
+            current.id.as_deref().unwrap(),
+            &merged,
+            &Default::default(),
+            current.etag.as_deref(),
+        )
+        .unwrap();
+        let (request, ret) = expect_exchange(&mut coroutine, &json_response("200 OK", EVENT));
+        ret.unwrap();
+        requests.push(request);
+    }
+
+    let [update] = requests.as_slice() else {
+        panic!("one instance update: {requests:?}");
+    };
+    assert!(
+        request_line(update)
+            .starts_with("PUT /calendar/v3/calendars/primary/events/m1_20261124T130000Z"),
+        "got: {update}"
+    );
+    assert!(update.contains("If-Match: \"e2\""), "got: {update}");
+    let body = request_body(update);
+    for expected in [
+        r#""start":{"dateTime":"2026-11-24T16:00:00","timeZone":"Europe/Paris"}"#,
+        r#""originalStartTime":{"dateTime":"2026-11-24T14:00:00+01:00","timeZone":"Europe/Paris"}"#,
+        r#""recurringEventId":"m1""#,
+        r#""colorId":"5""#,
+    ] {
+        assert!(body.contains(expected), "missing `{expected}` in {body}");
+    }
+}
+
 #[test]
 fn moves_an_event() {
     let mut coroutine = GcalEventMove::new(

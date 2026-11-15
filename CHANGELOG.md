@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `GcalEventSeries` (requires `ical` feature), a series document read as its master and its instances: `from_ical` gives the master `GcalEvent::from_ical` reads, its EXDATEs among its recurrence lines, each override read as a document holding it alone, and `left_out`, what Google cannot hold.
+
+  `GcalEvent::from_ical` reads the master alone, so a create or an import of a series dropped its overrides with no word. `GcalEvent::replaces` tells the listed instance an override replaces, by its original start as a date or an instant, and `GcalEvent::instance_window` gives the `timeMin` and `timeMax` of an `events.instances` listing holding it. `left_out` names an override with a RANGE, one whose RECURRENCE-ID does not read, one beside an event that is no series, and the units a full stash goes without, which fail no series.
+
 ## [0.5.0] - 2026-11-15
 
 ### Changed

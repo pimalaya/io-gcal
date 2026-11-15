@@ -52,8 +52,9 @@
 //! [`subscription`] shares such a calendar from the service account
 //! with the delegated user, and only runs on a service account key.
 //! With the `ical` feature, [`ical`] round-trips an event through the
-//! iCalendar projection, and [`ical_instances`] writes single occurrences
-//! of a series through their instances.
+//! iCalendar projection, [`ical_instances`] writes single occurrences
+//! of a series through their instances, and
+//! [`ical_series_with_its_instances`] does it from one series document.
 //!
 //! The push channels are deliberately left out: a `watch` needs a
 //! publicly reachable HTTPS webhook Google can POST to, which a test
@@ -516,6 +517,110 @@ fn ical_instances() {
             assert!(
                 document.contains("STATUS:CANCELLED\r\n"),
                 "the deletion stands:\n{document}"
+            );
+        },
+        |client| {
+            if let Err(err) = client.calendar_delete(&id) {
+                report_leftover("calendar", &id, &err);
+            }
+        },
+    );
+}
+
+/// A series written with an EXDATE and an override through
+/// `GcalEventSeries`: the master imported, then the override merged onto
+/// the instance it replaces, the series reading back with both.
+#[cfg(feature = "ical")]
+#[test]
+#[ignore = "requires GCAL_ACCESS_TOKEN env var and --ignored"]
+fn ical_series_with_its_instances() {
+    use io_gcal::v3::rest::events::ical::GcalEventSeries;
+
+    let mut client = connect(Principal::ServiceAccount);
+    let summary = format!("io-gcal-test-{}", unix_millis());
+    let uid = format!("{summary}@pimalaya.org");
+    let id = calendar_create(&mut client, &summary);
+
+    let document = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//pimalaya//io-gcal tests//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20300101T000000Z\r\n\
+         DTSTART;TZID=Europe/Paris:20300110T100000\r\n\
+         DTEND;TZID=Europe/Paris:20300110T103000\r\n\
+         RRULE:FREQ=WEEKLY;COUNT=4\r\nEXDATE;TZID=Europe/Paris:20300124T100000\r\n\
+         SUMMARY:{summary}\r\nEND:VEVENT\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20300101T000000Z\r\n\
+         RECURRENCE-ID;TZID=Europe/Paris:20300117T100000\r\n\
+         DTSTART;TZID=Europe/Paris:20300117T120000\r\n\
+         DTEND;TZID=Europe/Paris:20300117T123000\r\n\
+         SUMMARY:{summary}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+
+    with_cleanup(
+        &mut client,
+        |client| {
+            let series =
+                GcalEventSeries::from_ical(document.as_bytes()).expect("the series projects");
+            assert!(series.left_out.is_empty(), "{:?}", series.left_out);
+            assert_eq!(series.instances.len(), 1, "{:?}", series.instances);
+
+            let master = retry("series import", || {
+                client.event_import(&id, &series.master, &Default::default())
+            })
+            .response;
+            let master_id = master.id.clone().expect("the series carries an id");
+
+            for instance in &series.instances {
+                let (time_min, time_max) = instance.instance_window().expect("a window");
+                let params = GcalEventInstancesParams {
+                    time_min: Some(&time_min),
+                    time_max: Some(&time_max),
+                    ..Default::default()
+                };
+                let current = retry("instances in the window of an override", || {
+                    client.event_instances(&id, &master_id, &params)
+                })
+                .response
+                .items
+                .into_iter()
+                .find(|listed| instance.replaces(listed))
+                .unwrap_or_else(|| panic!("no instance for {instance:?}"));
+
+                let event = instance.clone().merge(&current);
+                let event_id = current.id.clone().expect("the instance carries an id");
+                retry("instance update", || {
+                    client.event_update(
+                        &id,
+                        &event_id,
+                        &event,
+                        &Default::default(),
+                        current.etag.as_deref(),
+                    )
+                });
+            }
+
+            let params = GcalEventsListParams {
+                ical_uid: Some(&uid),
+                show_deleted: true,
+                ..Default::default()
+            };
+            let events = retry("series listing", || client.events_list(&id, &params))
+                .response
+                .items;
+            let (masters, instances): (Vec<GcalEvent>, Vec<GcalEvent>) = events
+                .into_iter()
+                .partition(|event| event.recurring_event_id.is_none());
+            let instances: Vec<&GcalEvent> = instances.iter().collect();
+            let read = masters[0].to_ical_series(&instances);
+
+            for expected in [
+                "RECURRENCE-ID;TZID=Europe/Paris:20300117T100000\r\n",
+                "DTSTART;TZID=Europe/Paris:20300117T120000\r\n",
+            ] {
+                assert!(read.contains(expected), "missing `{expected}`:\n{read}");
+            }
+            assert!(
+                read.contains("20300124T100000"),
+                "the EXDATE stands:\n{read}"
             );
         },
         |client| {

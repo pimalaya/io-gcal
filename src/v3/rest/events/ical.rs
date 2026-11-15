@@ -29,13 +29,16 @@
 //! VEVENT replacing no instance, or the one occurrence a document holds
 //! alone, its RECURRENCE-ID as `originalStartTime`, and
 //! [`GcalEvent::merge`] keeps the instance the server copy names.
+//! [`GcalEventSeries`] reads a whole series document as its master and
+//! its instances, each finding the listed instance it
+//! [`replaces`](GcalEvent::replaces), and names what Google cannot hold.
 //!
 //! `created` and `updated` project onto CREATED and LAST-MODIFIED, but
 //! Google stamps them itself, so an incoming CREATED or LAST-MODIFIED is
 //! consumed rather than written. Every TZID the document names gets a
 //! VTIMEZONE, synthesized from the bundled time zone database.
 
-use core::{fmt, mem::take};
+use core::{fmt, mem::take, ptr};
 
 use alloc::{
     borrow::ToOwned,
@@ -59,7 +62,10 @@ use ical::{
         error::IcalParseError,
         leaf::IcalLeaf,
         line::IcalLine,
-        param::{cn::CN, cutype::CUTYPE, partstat::PARTSTAT, role::ROLE, tzid::TZID, value::VALUE},
+        param::{
+            cn::CN, cutype::CUTYPE, partstat::PARTSTAT, range::RANGE, role::ROLE, tzid::TZID,
+            value::VALUE,
+        },
         wire::IcalWire,
     },
     tzdb,
@@ -347,8 +353,7 @@ impl GcalEvent {
     ///
     /// The event is the series master of a document holding several
     /// VEVENTs, the one replacing no instance; the exceptions of a series
-    /// are written through their instance, each from a document holding it
-    /// alone.
+    /// are written through their instance ([`GcalEventSeries`]).
     ///
     /// Only the managed fields and the stash are filled: a provider-only
     /// field has no iCalendar source, and [`merge`](Self::merge) carries it over from
@@ -360,7 +365,14 @@ impl GcalEvent {
     pub fn from_ical(contents: &[u8]) -> Result<Self, GcalEventIcalError> {
         let calendar = IcalCst::parse(contents).map_err(GcalEventIcalError::Parse)?;
         let (vevent, calendar) = take_vevent(&calendar)?;
+        Self::from_vevent(vevent, calendar)
+    }
 
+    /// Reads one VEVENT, stashing the remainder of `calendar` when given.
+    fn from_vevent(
+        vevent: &IcalCst<'_>,
+        calendar: Option<&IcalCst<'_>>,
+    ) -> Result<Self, GcalEventIcalError> {
         let mut event = GcalEvent::default();
         let mut reminders = Vec::new();
         let mut stash = Vec::new();
@@ -635,6 +647,121 @@ impl GcalEvent {
             attachments: current.attachments.clone(),
 
             ..projected
+        }
+    }
+
+    /// Whether `instance`, listed by `events.instances` or among the
+    /// exceptions of a series, is the occurrence this one replaces: the
+    /// same original date, or the same original instant.
+    pub fn replaces(&self, instance: &GcalEvent) -> bool {
+        let (Some(ours), Some(theirs)) = (&self.original_start_time, &instance.original_start_time)
+        else {
+            return false;
+        };
+
+        match (&ours.date, &theirs.date) {
+            (Some(ours), Some(theirs)) => ours == theirs,
+            (None, None) => instant(ours).is_some_and(|ours| instant(theirs) == Some(ours)),
+            _ => false,
+        }
+    }
+
+    /// The `timeMin` and `timeMax` of an `events.instances` listing
+    /// holding the occurrence this one replaces: from the day before its
+    /// original start to two days after, at midnight UTC.
+    pub fn instance_window(&self) -> Option<(String, String)> {
+        let original = self.original_start_time.as_ref()?;
+        let stamp = original.date.as_deref().or(original.date_time.as_deref())?;
+        let date = stamp.get(..10)?.parse::<Date>().ok()?;
+        let midnight = |date: Date| format!("{date}T00:00:00Z");
+
+        Some((
+            midnight(date.saturating_sub(Span::new().days(1))),
+            midnight(date.saturating_add(Span::new().days(2))),
+        ))
+    }
+}
+
+/// A series document cut the way Google takes it: its master, imported or
+/// written with its recurrence lines, then each override written through
+/// its instance.
+///
+/// A caller writes the master, then merges each instance onto the listed
+/// one it [`replaces`](GcalEvent::replaces) and updates that, and warns of
+/// or refuses what is left out. An instance no listing holds names an
+/// occurrence the series does not have, or is cancelled already when its
+/// status says so.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GcalEventSeries {
+    /// The series master, its EXDATEs among its recurrence lines.
+    pub master: GcalEvent,
+    /// Each override, read as a document holding it alone, its original
+    /// start naming its instance.
+    pub instances: Vec<GcalEvent>,
+    /// What Google cannot hold, each unit as its logical lines.
+    pub left_out: Vec<Vec<String>>,
+}
+
+impl GcalEventSeries {
+    /// Reads a series document as its master, the VEVENT
+    /// [`GcalEvent::from_ical`] reads, and its instances, every other VEVENT
+    /// read with no calendar remainder.
+    ///
+    /// A stash past what Google stores fails nothing: each event keeps the
+    /// units that fit, the others joining `left_out`.
+    pub fn from_ical(contents: &[u8]) -> Result<Self, GcalEventIcalError> {
+        let calendar = IcalCst::parse(contents).map_err(GcalEventIcalError::Parse)?;
+        let (master, wrapper) = take_vevent(&calendar)?;
+
+        let mut series = Self::default();
+        series.master = series.fitting(GcalEvent::from_vevent(master, wrapper))?;
+
+        let lone =
+            series.master.recurrence.is_empty() && series.master.original_start_time.is_none();
+
+        let others = calendar.items.iter().filter_map(|item| match item {
+            IcalItem::Component(child)
+                if is_named(child, "VEVENT") && !ptr::eq(&**child, master) =>
+            {
+                Some(child.as_ref())
+            }
+            _ => None,
+        });
+
+        for vevent in others {
+            let recurrence_id = vevent.items.iter().find_map(|item| match item {
+                IcalItem::Prop(line) if line.name.get().eq_ignore_ascii_case("RECURRENCE-ID") => {
+                    Some(line)
+                }
+                _ => None,
+            });
+            let carried = recurrence_id
+                .is_some_and(|line| line.param::<RANGE>().is_none() && boundary(line).is_some());
+
+            if lone || !carried {
+                series.left_out.push(raw_component(vevent));
+                continue;
+            }
+
+            let instance = series.fitting(GcalEvent::from_vevent(vevent, None))?;
+            series.instances.push(instance);
+        }
+
+        Ok(series)
+    }
+
+    /// The event a read gives, a stash past the budget keeping the units
+    /// that fit and naming the others.
+    fn fitting(
+        &mut self,
+        read: Result<GcalEvent, GcalEventIcalError>,
+    ) -> Result<GcalEvent, GcalEventIcalError> {
+        match read {
+            Err(GcalEventIcalError::StashFull { event, left_out }) => {
+                self.left_out.extend(left_out);
+                Ok(*event)
+            }
+            read => read,
         }
     }
 }
@@ -1241,6 +1368,19 @@ fn is_utc_stamped(date_time: &str) -> bool {
     date_time
         .rsplit_once('T')
         .is_some_and(|(_, time)| time.ends_with(['Z', 'z']))
+}
+
+/// The instant a timed boundary names, a time without offset read in its
+/// zone.
+fn instant(boundary: &GcalEventDateTime) -> Option<Timestamp> {
+    let date_time = boundary.date_time.as_deref()?;
+    if let Ok(instant) = date_time.parse::<Timestamp>() {
+        return Some(instant);
+    }
+
+    let zone = TimeZone::get(boundary.time_zone.as_deref()?).ok()?;
+    let zoned = date_time.parse::<DateTime>().ok()?.to_zoned(zone).ok()?;
+    Some(zoned.timestamp())
 }
 
 /// `YYYYMMDD` to the RFC 3339 `yyyy-mm-dd` Google reads.
@@ -2653,6 +2793,195 @@ mod tests {
         assert_eq!(merged.recurring_event_id.as_deref(), Some("master-1"));
         assert_eq!(merged.original_start_time, Some(original));
         assert_eq!(merged.summary.as_deref(), Some("Stand-up moved"));
+    }
+
+    /// The RECURRENCE-ID of the 24 November occurrence, in Paris.
+    const PARIS_24: &str = "RECURRENCE-ID;TZID=Europe/Paris:20261124T140000";
+
+    /// A daily series of four from 23 November at 14:00 in Paris, its
+    /// 25 November occurrence excluded, `extra` in its master and
+    /// `overrides` after it.
+    fn series(extra: &str, overrides: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Work\r\nBEGIN:VEVENT\r\n\
+             UID:series@x.org\r\nDTSTAMP:20261115T090000Z\r\n\
+             DTSTART;TZID=Europe/Paris:20261123T140000\r\n\
+             DTEND;TZID=Europe/Paris:20261123T150000\r\n\
+             RRULE:FREQ=DAILY;COUNT=4\r\nEXDATE;TZID=Europe/Paris:20261125T140000\r\n\
+             SUMMARY:Review\r\n{extra}END:VEVENT\r\n{overrides}END:VCALENDAR\r\n"
+        )
+    }
+
+    /// The occurrence `recurrence_id` names, moved to 24 November at 16:00.
+    fn moved(recurrence_id: &str) -> String {
+        format!(
+            "BEGIN:VEVENT\r\nUID:series@x.org\r\nDTSTAMP:20261115T090000Z\r\n\
+             {recurrence_id}\r\nDTSTART;TZID=Europe/Paris:20261124T160000\r\n\
+             DTEND;TZID=Europe/Paris:20261124T170000\r\nSUMMARY:Review\r\n\
+             END:VEVENT\r\n"
+        )
+    }
+
+    /// An instance of the series as Google lists it, originally starting
+    /// at `original`.
+    fn listed(original: GcalEventDateTime) -> GcalEvent {
+        GcalEvent {
+            id: Some(String::from("m1_20261124T130000Z")),
+            recurring_event_id: Some(String::from("m1")),
+            original_start_time: Some(original),
+            ..Default::default()
+        }
+    }
+
+    /// A listed original start at a date-time, in `zone`.
+    fn at(date_time: &str, zone: &str) -> GcalEventDateTime {
+        GcalEventDateTime {
+            date_time: Some(String::from(date_time)),
+            time_zone: Some(String::from(zone)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_series_carries_its_override_to_its_instance() {
+        let document = series("", &moved(PARIS_24));
+
+        let series = GcalEventSeries::from_ical(document.as_bytes()).unwrap();
+
+        assert_eq!(
+            series.master,
+            GcalEvent::from_ical(document.as_bytes()).unwrap()
+        );
+        assert_eq!(
+            series.master.recurrence,
+            [
+                "RRULE:FREQ=DAILY;COUNT=4",
+                "EXDATE;TZID=Europe/Paris:20261125T140000"
+            ]
+        );
+        assert!(series.left_out.is_empty(), "{:?}", series.left_out);
+        let [instance] = series.instances.as_slice() else {
+            panic!("one instance: {:?}", series.instances);
+        };
+
+        let original = instance.original_start_time.as_ref().unwrap();
+        assert_eq!(original.date_time.as_deref(), Some("2026-11-24T14:00:00"));
+        assert_eq!(original.time_zone.as_deref(), Some("Europe/Paris"));
+        let start = instance.start.as_ref().unwrap();
+        assert_eq!(start.date_time.as_deref(), Some("2026-11-24T16:00:00"));
+        assert!(instance.recurrence.is_empty());
+        assert!(
+            instance.extended_properties.is_none(),
+            "the calendar remainder stays with the master: {:?}",
+            instance.extended_properties
+        );
+    }
+
+    #[test]
+    fn an_instance_finds_the_occurrence_it_replaces() {
+        for recurrence_id in [PARIS_24, "RECURRENCE-ID:20261124T130000Z"] {
+            let document = series("", &moved(recurrence_id));
+            let series = GcalEventSeries::from_ical(document.as_bytes()).unwrap();
+            let [instance] = series.instances.as_slice() else {
+                panic!("one instance: {:?}", series.instances);
+            };
+
+            let current = listed(at("2026-11-24T14:00:00+01:00", "Europe/Paris"));
+            assert!(instance.replaces(&current), "{recurrence_id}");
+            assert!(instance.replaces(&listed(at("2026-11-24T13:00:00Z", "UTC"))));
+            assert!(!instance.replaces(&listed(at("2026-11-25T14:00:00+01:00", "Europe/Paris"))));
+            assert!(!instance.replaces(&GcalEvent::default()));
+            assert_eq!(
+                instance.instance_window(),
+                Some((
+                    String::from("2026-11-23T00:00:00Z"),
+                    String::from("2026-11-26T00:00:00Z")
+                ))
+            );
+
+            let merged = instance.clone().merge(&current);
+            assert_eq!(merged.id, current.id);
+            assert_eq!(merged.original_start_time, current.original_start_time);
+            assert_eq!(merged.start, instance.start);
+        }
+
+        let all_day = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:days@x.org\r\n\
+            DTSTART;VALUE=DATE:20261123\r\nDTEND;VALUE=DATE:20261124\r\n\
+            RRULE:FREQ=DAILY;COUNT=4\r\nSUMMARY:Off\r\nEND:VEVENT\r\n\
+            BEGIN:VEVENT\r\nUID:days@x.org\r\nRECURRENCE-ID;VALUE=DATE:20261124\r\n\
+            DTSTART;VALUE=DATE:20261125\r\nDTEND;VALUE=DATE:20261126\r\n\
+            SUMMARY:Off, moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let series = GcalEventSeries::from_ical(all_day.as_bytes()).unwrap();
+        let [instance] = series.instances.as_slice() else {
+            panic!("one instance: {:?}", series.instances);
+        };
+        let on = |date: &str| {
+            listed(GcalEventDateTime {
+                date: Some(String::from(date)),
+                ..Default::default()
+            })
+        };
+
+        assert!(instance.replaces(&on("2026-11-24")));
+        assert!(!instance.replaces(&on("2026-11-25")));
+        assert!(!instance.replaces(&listed(at("2026-11-24T00:00:00Z", "UTC"))));
+    }
+
+    #[test]
+    fn what_google_cannot_hold_of_a_series_is_named() {
+        let ranged = moved("RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Europe/Paris:20261126T140000");
+        let floating = moved("RECURRENCE-ID:20261123T140000");
+        let document = series("", &format!("{}{ranged}{floating}", moved(PARIS_24)));
+
+        let cut = GcalEventSeries::from_ical(document.as_bytes()).unwrap();
+
+        assert_eq!(cut.instances.len(), 1, "{:?}", cut.instances);
+        let named: Vec<(&str, &str)> = cut
+            .left_out
+            .iter()
+            .map(|unit| {
+                let first = unit.first().map(String::as_str).unwrap_or_default();
+                let recurrence_id = unit
+                    .iter()
+                    .find(|line| line.starts_with("RECURRENCE-ID"))
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                (first, recurrence_id)
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (
+                    "BEGIN:VEVENT",
+                    "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=Europe/Paris:20261126T140000"
+                ),
+                ("BEGIN:VEVENT", "RECURRENCE-ID:20261123T140000"),
+            ]
+        );
+
+        let lone = document.replace(
+            "RRULE:FREQ=DAILY;COUNT=4\r\nEXDATE;TZID=Europe/Paris:20261125T140000\r\n",
+            "",
+        );
+        let lone = GcalEventSeries::from_ical(lone.as_bytes()).unwrap();
+        assert!(lone.instances.is_empty(), "{:?}", lone.instances);
+        assert_eq!(lone.left_out.len(), 3, "{:?}", lone.left_out);
+
+        let wide: String = (0..40)
+            .map(|index| format!("X-WIDE-{index}:{}\r\n", "a".repeat(1000)))
+            .collect();
+        let full = series(&wide, &moved(PARIS_24));
+        let full = GcalEventSeries::from_ical(full.as_bytes()).unwrap();
+        assert_eq!(full.instances.len(), 1, "{:?}", full.instances);
+        assert!(full.master.extended_properties.is_some());
+        assert!(
+            full.left_out
+                .iter()
+                .any(|unit| unit.first().is_some_and(|line| line.starts_with("X-WIDE-"))),
+            "{:?}",
+            full.left_out
+        );
     }
 
     /// The logical lines of a projected document, its folds resolved.

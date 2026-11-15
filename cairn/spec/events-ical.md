@@ -6,7 +6,7 @@ status: current
 
 # Events as iCalendar
 
-The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built, about which alarms become reminders and about what a merge keeps of the server copy; the rest of the projection is not written down yet.
+The `ical` feature projects a Google event to a VEVENT (`GcalEvent::to_ical`) and reads one back (`GcalEvent::from_ical`). This file holds what the projection decides about an event's end, about the stash of the lines it does not manage, about how the document is built, about which alarms become reminders, about what a merge keeps of the server copy and about how a series document is cut into its master and its instances; the rest of the projection is not written down yet.
 
 ### Requirement: Every event read has an end
 `GcalEvent::from_ical` SHALL give Google an end for every VEVENT it accepts: its DTEND, else its DATE-TIME or DATE start shifted by its DURATION, else the end RFC 5545 3.6.1 implies, the start itself after a DATE-TIME start and the next day after a DATE one. The end SHALL keep the start's zone and shape. It SHALL refuse with `NoEnd` only an end the document gives and Google cannot read: a floating DTEND, a negative DURATION, a DURATION with a time part after a DATE start.
@@ -87,3 +87,17 @@ A stored line that is no content line SHALL be left out of the document. Among t
 
 ### Requirement: A value this crate does not know comes from the server copy
 A status, a transparency, a visibility, the response of an attendee or the method of a reminder that reads as `Unknown` SHALL project to no line, parameter or VALARM. `GcalEvent::merge` SHALL take it from the server copy when the document gives none in its place: the status, transparency and visibility of the event, the response of the attendee of the same address, and every reminder override whose method is unknown.
+
+### Requirement: A series is written with its instances
+`GcalEventSeries::from_ical` SHALL read a document as its master, the VEVENT `GcalEvent::from_ical` reads with the calendar remainder, its EXDATEs among its recurrence lines, and every other VEVENT as an instance, read as a document holding it alone, with no calendar remainder, its RECURRENCE-ID as its `originalStartTime`. A stash past the budget SHALL NOT fail the series: each event keeps the units that fit, and the units left out join the series' `left_out`.
+
+#### Scenario: A series with one EXDATE and one override
+- GIVEN a daily series of four from 2026-11-23 14:00 in Europe/Paris, an EXDATE on 2026-11-25 and an override moving 2026-11-24 to 16:00
+- WHEN it is read as a series
+- THEN the master carries the RRULE and the EXDATE as its recurrence, and one instance replaces the occurrence originally starting 2026-11-24 14:00 in Europe/Paris, starting at 16:00
+
+### Requirement: An instance names the occurrence it replaces
+An instance SHALL replace a listed one when both original starts are dates and the same date, or both are date-times naming the same instant, an offset-less time read in its zone. Its listing window SHALL run from the midnight UTC of the day before its original start's date to that of two days after.
+
+### Requirement: What Google cannot hold of a series is named
+`GcalEventSeries::from_ical` SHALL drop nothing silently: it SHALL name, as its logical lines, every override whose RECURRENCE-ID carries a RANGE or does not read, every override beside an event that is no series, and every unit a stash goes without.
