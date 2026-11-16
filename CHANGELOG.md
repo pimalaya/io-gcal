@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-16
+
+### Changed
+
+- Changed the jiff dependency to 1 and ical-rs to 0.7.1, behind the `ical` feature.
+
 ## [0.5.1] - 2026-11-15
 
 ### Added
@@ -156,7 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.5.1..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.5.2..HEAD
+[0.5.2]: https://github.com/pimalaya/io-gcal/compare/v0.5.1..v0.5.2
 [0.5.1]: https://github.com/pimalaya/io-gcal/compare/v0.5.0..v0.5.1
 [0.5.0]: https://github.com/pimalaya/io-gcal/compare/v0.4.0..v0.5.0
 [0.4.0]: https://github.com/pimalaya/io-gcal/compare/v0.3.1..v0.4.0

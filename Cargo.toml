@@ -1,7 +1,7 @@
 [package]
 name = "io-gcal"
 description = "Google Calendar REST API client library for Rust"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["Clément DOUIN (soywod) <pimalaya.org@posteo.net>"]
 rust-version = "1.89"
 edition = "2024"
@@ -39,9 +39,9 @@ secrecy = { version = "0.10", default-features = false }
 
 [dependencies]
 anyhow = { version = "1", optional = true }
-ical-rs = { version = "0.7", default-features = false, features = ["parser", "tzdb"], optional = true }
+ical-rs = { version = "0.7.1", default-features = false, features = ["parser", "tzdb"], optional = true }
 io-http = { version = "0.8", default-features = false }
-jiff = { version = "0.2", default-features = false, features = ["alloc"], optional = true }
+jiff = { version = "1", default-features = false, features = ["alloc"], optional = true }
 log = { version = "0.4", default-features = false }
 pimalaya-stream = { version = "0.4", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

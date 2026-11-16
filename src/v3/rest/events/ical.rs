@@ -196,7 +196,7 @@ impl GcalEvent {
             .and_then(|boundary| boundary.date_time.as_deref().or(boundary.date.as_deref()))
             .and_then(|stamp| stamp.get(..10))
             .and_then(|date| date.parse::<Date>().ok())
-            .and_then(|date| date.to_zoned(TimeZone::UTC).ok())
+            .and_then(|date| date.to_zoned_datetime(TimeZone::UTC).ok())
             .map_or(0, |zoned| zoned.timestamp().as_second());
 
         let definitions = referenced
@@ -1369,7 +1369,7 @@ fn wall_time(date_time: &str, zone: &str) -> Option<String> {
 
     let instant = date_time.parse::<Timestamp>().ok()?;
     let zone = TimeZone::get(zone).ok()?;
-    let zoned = instant.to_zoned(zone);
+    let zoned = instant.to_zoned_datetime(zone);
     Some(zoned.strftime("%Y%m%dT%H%M%S").to_string())
 }
 
@@ -1399,7 +1399,11 @@ fn instant(boundary: &GcalEventDateTime) -> Option<Timestamp> {
     }
 
     let zone = TimeZone::get(boundary.time_zone.as_deref()?).ok()?;
-    let zoned = date_time.parse::<DateTime>().ok()?.to_zoned(zone).ok()?;
+    let zoned = date_time
+        .parse::<DateTime>()
+        .ok()?
+        .to_zoned_datetime(zone)
+        .ok()?;
     Some(zoned.timestamp())
 }
 
