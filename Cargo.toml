@@ -18,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["client", "rustls-ring"]
-client = ["dep:io-http", "dep:log", "dep:thiserror", "dep:url"]
+client = ["dep:io-http", "io-http/client", "dep:log", "dep:thiserror", "dep:url"]
 std = ["client"]
 rustls-ring = ["std", "client", "pimalaya-stream/rustls-ring", "dep:anyhow", "dep:pimalaya-stream"]
 rustls-aws = ["std", "client", "pimalaya-stream/rustls-aws", "dep:anyhow", "dep:pimalaya-stream"]
@@ -33,7 +33,7 @@ required-features = ["rustls-ring"]
 
 [dev-dependencies]
 env_logger = "0.11"
-io-oauth = { version = "0.7", default-features = false, features = ["jwt-bearer", "rustls-ring"] }
+io-oauth = { version = "0.8", default-features = false, features = ["jwt-bearer", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
 secrecy = { version = "0.10", default-features = false }
@@ -41,7 +41,7 @@ secrecy = { version = "0.10", default-features = false }
 [dependencies]
 anyhow = { version = "1", optional = true }
 ical-rs = { version = "0.7.1", default-features = false, features = ["parser", "tzdb"], optional = true }
-io-http = { version = "0.8", default-features = false, optional = true }
+io-http = { version = "0.9", default-features = false, optional = true }
 jiff = { version = "1", default-features = false, features = ["alloc"], optional = true }
 log = { version = "0.4", default-features = false, optional = true }
 pimalaya-stream = { version = "0.4", default-features = false, optional = true }
