@@ -17,11 +17,12 @@ This repository follows [Cairn](https://github.com/pimalaya/cairn): a living spe
 
 ## Feature matrix
 
-io-gcal follows the standard layered split (I/O-free coroutines, then the std client behind the `client` feature), plus a vendored switch compiling the TLS dependencies from source:
+io-gcal follows the standard layered split (no_std resource types, the I/O-free coroutines behind the `client` feature, then the std client behind the `std` feature, implying `client`), plus a vendored switch compiling the TLS dependencies from source:
 
 ```sh
-cargo build --no-default-features                        # coroutines only, no std leak
-cargo build --no-default-features --features client      # light client, no TLS deps
+cargo build --no-default-features                        # resource types only, no std leak
+cargo build --no-default-features --features client      # coroutines, still no_std
+cargo build --no-default-features --features std         # light client, no TLS deps
 cargo build                                              # full client (rustls-ring by default)
 cargo build --no-default-features --features rustls-aws  # full client, aws-lc-rs crypto
 cargo build --no-default-features --features native-tls  # full client, platform TLS

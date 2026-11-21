@@ -38,8 +38,8 @@ Check the structure yourself against the strict rules (CAIRN.md §8): a discover
 
 - Run every cargo command through the nix devshell: `nix develop --command cargo <...>`.
 - Run `cargo fmt` on the crate after finishing code changes.
-- io-gcal is an I/O-free library: the coroutines take no stream and build on io-http's, and every layer above them sits behind a feature (`client` for the blocking client, `rustls-ring`, `rustls-aws` or `native-tls` for the full client, plus `ical` for the iCalendar bridge). Build both sides of a gate you touch.
-- Check the bare core too: `cargo build --no-default-features` must stay no_std, with no std leak.
+- io-gcal is an I/O-free library: the coroutines take no stream and build on io-http's, and each layer sits behind a feature (`client` for the coroutines, `std` for the blocking client, `rustls-ring`, `rustls-aws` or `native-tls` for the full client, plus `ical` for the iCalendar bridge). Build both sides of a gate you touch.
+- Check the bare core too: `cargo build --no-default-features` and `--no-default-features --features client` must stay no_std, with no std leak.
 - The tree follows the API version: the version-agnostic coroutine contract stays at the crate root, everything else lives under `v3`, with one module per Calendar REST resource under `v3::rest`.
 - Public items carry the `Gcal` domain prefix.
 - Never adjust production code to fit a test: adjust the test to match correct behaviour.

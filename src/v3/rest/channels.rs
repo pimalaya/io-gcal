@@ -12,6 +12,7 @@ use alloc::{collections::BTreeMap, string::String};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
 pub mod stop;
 
 /// A notification channel watching a Calendar resource for changes.

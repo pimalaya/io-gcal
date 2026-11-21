@@ -10,6 +10,7 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
 pub mod query;
 
 /// The question asked to `freebusy.query`.

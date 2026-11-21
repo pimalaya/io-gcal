@@ -17,13 +17,14 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["rustls-ring"]
-client = []
-rustls-ring = ["client", "pimalaya-stream/rustls-ring", "dep:anyhow", "dep:pimalaya-stream"]
-rustls-aws = ["client", "pimalaya-stream/rustls-aws", "dep:anyhow", "dep:pimalaya-stream"]
-native-tls = ["client", "pimalaya-stream/native-tls", "dep:anyhow", "dep:pimalaya-stream"]
+default = ["client", "rustls-ring"]
+client = ["dep:io-http", "dep:log", "dep:thiserror", "dep:url"]
+std = ["client"]
+rustls-ring = ["std", "client", "pimalaya-stream/rustls-ring", "dep:anyhow", "dep:pimalaya-stream"]
+rustls-aws = ["std", "client", "pimalaya-stream/rustls-aws", "dep:anyhow", "dep:pimalaya-stream"]
+native-tls = ["std", "client", "pimalaya-stream/native-tls", "dep:anyhow", "dep:pimalaya-stream"]
 vendored = ["pimalaya-stream?/vendored"]
-ical = ["dep:ical-rs", "dep:jiff"]
+ical = ["dep:ical-rs", "dep:jiff", "dep:log"]
 
 [[example]]
 name = "std_gcal"
@@ -40,11 +41,11 @@ secrecy = { version = "0.10", default-features = false }
 [dependencies]
 anyhow = { version = "1", optional = true }
 ical-rs = { version = "0.7.1", default-features = false, features = ["parser", "tzdb"], optional = true }
-io-http = { version = "0.8", default-features = false }
+io-http = { version = "0.8", default-features = false, optional = true }
 jiff = { version = "1", default-features = false, features = ["alloc"], optional = true }
-log = { version = "0.4", default-features = false }
+log = { version = "0.4", default-features = false, optional = true }
 pimalaya-stream = { version = "0.4", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
-thiserror = { version = "2", default-features = false }
-url = { version = "2.5", default-features = false, features = ["serde"] }
+thiserror = { version = "2", default-features = false, optional = true }
+url = { version = "2.5", default-features = false, features = ["serde"], optional = true }

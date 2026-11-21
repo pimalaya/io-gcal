@@ -12,12 +12,19 @@ use alloc::{string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
 pub mod clear;
+#[cfg(feature = "client")]
 pub mod delete;
+#[cfg(feature = "client")]
 pub mod get;
+#[cfg(feature = "client")]
 pub mod insert;
+#[cfg(feature = "client")]
 pub mod patch;
+#[cfg(feature = "client")]
 pub mod transfer_ownership;
+#[cfg(feature = "client")]
 pub mod update;
 
 /// A calendar and the properties shared by everyone who accesses it.

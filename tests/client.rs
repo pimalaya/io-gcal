@@ -2,7 +2,7 @@
 //! against a scripted stream replaying canned HTTP responses, plus the
 //! error paths a real stream can take.
 
-#![cfg(feature = "client")]
+#![cfg(feature = "std")]
 
 mod common;
 

@@ -1,5 +1,4 @@
-//! Std-blocking Google Calendar client, gated behind the `client`
-//! feature.
+//! Std-blocking Google Calendar client, gated behind the `std` feature.
 //!
 //! Wraps a `Read + Write` stream plus the bearer credential and runs
 //! the coroutines against `www.googleapis.com`.

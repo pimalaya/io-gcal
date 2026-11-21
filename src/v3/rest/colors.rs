@@ -9,6 +9,7 @@ use alloc::{collections::BTreeMap, string::String};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
 pub mod get;
 
 /// The global colour palettes of the Calendar API.

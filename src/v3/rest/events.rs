@@ -16,18 +16,29 @@ use serde_json::Value;
 
 use crate::v3::rest::{acl::GcalAccessRole, calendars::GcalConferenceSolutionType};
 
+#[cfg(feature = "client")]
 pub mod delete;
+#[cfg(feature = "client")]
 pub mod get;
 #[cfg(feature = "ical")]
 pub mod ical;
+#[cfg(feature = "client")]
 pub mod import;
+#[cfg(feature = "client")]
 pub mod insert;
+#[cfg(feature = "client")]
 pub mod instances;
+#[cfg(feature = "client")]
 pub mod list;
+#[cfg(feature = "client")]
 pub mod r#move;
+#[cfg(feature = "client")]
 pub mod patch;
+#[cfg(feature = "client")]
 pub mod quick_add;
+#[cfg(feature = "client")]
 pub mod update;
+#[cfg(feature = "client")]
 pub mod watch;
 
 /// The events of a calendar, one page of the listing.

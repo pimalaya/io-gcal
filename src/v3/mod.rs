@@ -5,8 +5,10 @@
 //! `settings`); the sibling modules hold the transport primitive, the
 //! query serializer and the optional std client.
 
-#[cfg(feature = "client")]
+#[cfg(feature = "std")]
 pub mod client;
+#[cfg(feature = "client")]
 pub mod query;
 pub mod rest;
+#[cfg(feature = "client")]
 pub mod send;

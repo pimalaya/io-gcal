@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Renamed the `client` feature, which gated the blocking client, to `std`.
+
+  A consumer naming it moves to the new name:
+
+  ```toml
+  # before
+  io-gcal = { version = "0.5", default-features = false, features = ["client"] }
+  # after
+  io-gcal = { version = "0.6", default-features = false, features = ["std"] }
+  ```
+
+- **BREAKING**: Changed the `client` feature to gate the coroutines (`coroutine`, `v3::send`, `v3::query` and every method submodule of `v3::rest`) and the io-http, log, thiserror and url dependencies.
+
+  It is on by default and implied by `std` and the TLS features. A consumer turning default features off to drive the coroutines itself adds it:
+
+  ```toml
+  # before
+  io-gcal = { version = "0.5", default-features = false }
+  # after
+  io-gcal = { version = "0.6", default-features = false, features = ["client"] }
+  ```
+
+  The resource types of `v3::rest` stay compiled without it, and so does the `ical` bridge.
+
 ## [0.5.2] - 2026-11-16
 
 ### Changed
