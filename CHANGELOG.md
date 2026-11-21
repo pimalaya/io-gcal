@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
 ### Changed
 
 - Moved to io-http 0.9; `client` enables `io-http/client`.
@@ -189,7 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `GcalSendError::is_precondition_failed` recognises the 412 a stale tag returns.
 
-[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.5.2..HEAD
+[unreleased]: https://github.com/pimalaya/io-gcal/compare/v0.6.0..HEAD
+[0.6.0]: https://github.com/pimalaya/io-gcal/compare/v0.5.2..v0.6.0
 [0.5.2]: https://github.com/pimalaya/io-gcal/compare/v0.5.1..v0.5.2
 [0.5.1]: https://github.com/pimalaya/io-gcal/compare/v0.5.0..v0.5.1
 [0.5.0]: https://github.com/pimalaya/io-gcal/compare/v0.4.0..v0.5.0
